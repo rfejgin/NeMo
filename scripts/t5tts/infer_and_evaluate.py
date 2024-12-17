@@ -22,6 +22,33 @@ Sample command line:
  
 """
 
+"""
+Sample command line:
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output
+"""
+# dataset_meta_info = {
+#     'vctk': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
+#         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
+#         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
+#     },
+#     'riva_challenging': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
+#         'audio_dir' : '/datap/misc/Datasets/riva',
+#         'feature_dir' : '/datap/misc/Datasets/riva',
+#     },
+#     'riva_challenging_nozeros': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
+#         'audio_dir' : '/datap/misc/Datasets/riva',
+#         'feature_dir' : '/datap/misc/Datasets/riva',
+#     },
+#     'libri_val': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
+#         'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+#         'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+#     }
+# }
+
 dataset_meta_info = {
     'vctk': {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',

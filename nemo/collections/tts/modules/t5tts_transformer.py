@@ -617,6 +617,12 @@ class TransformerStack(nn.Module):
                     torch.nn.init.normal_(
                         p, mean=0.0, std=0.02 / math.sqrt(2 * n_layers))
         
+        self.add_position_embeddings = False
+        if hparams['pos_emb'].get("name", None) == 'learnable_v2':
+            self.add_position_embeddings = True
+            self.position_embeddings = nn.Embedding(
+                hparams['max_length_causal_mask'], hparams['d_model']
+            )
 
     def reset_cache(self, use_cache=False):
         for layer in self.layers:

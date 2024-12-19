@@ -463,7 +463,7 @@ class T5TTSDataset(TextToSpeechDataset):
                 start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
                 context_audio_array = context_audio_array[start_idx:start_idx+_num_samples_to_slice]
             else:
-                # Repeaet the audio if it is shorter than the desired duration
+                # Repeat the audio if it is shorter than the desired duration
                 _num_repeats = int(np.ceil(_num_samples_to_slice / len(context_audio_array)))
                 context_audio_array = np.tile(context_audio_array, _num_repeats)
                 context_audio_array = context_audio_array[:_num_samples_to_slice]

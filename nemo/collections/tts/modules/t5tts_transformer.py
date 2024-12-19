@@ -623,6 +623,9 @@ class TransformerStack(nn.Module):
             self.position_embeddings = nn.Embedding(
                 hparams['max_length_causal_mask'], hparams['d_model']
             )
+        elif hparams['pos_emb'].get("name", None) == 'learnable':
+            # raise warning
+            logging.warning("Use learnable_v2 instead of learnable for pos emb, unless using old checkpoints.")
 
     def reset_cache(self, use_cache=False):
         for layer in self.layers:

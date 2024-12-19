@@ -13,7 +13,13 @@ import scipy.stats as stats
 
 """
 Sample command line:
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output 
+ # with cfg
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output/with_cfg --use_cfg --cfg_scale 1.8 --batch_size 12
+
+ # Paarth's decoder context checkpoint
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
+ 
 """
 
 dataset_meta_info = {

@@ -11,7 +11,13 @@ import argparse
 
 """
 Sample command line:
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output 
+ # with cfg
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output/with_cfg --use_cfg --cfg_scale 1.8 --batch_size 12
+
+ # Paarth's decoder context checkpoint
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
+ 
 """
 # dataset_meta_info = {
 #     'vctk': {
@@ -140,6 +146,9 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                                audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
             write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
                                audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
+            
+            # todo read target codes and use model.codes_to_audio to convert to audio, then write out
+            # (alternatively: save actual audio file path in dataloader and here just copy it - not same thing since it's doesn't get coded
             item_idx += predicted_audio.size(0)
             # for idx in range(predicted_audio.size(0)):
             #     predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()

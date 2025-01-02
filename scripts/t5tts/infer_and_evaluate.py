@@ -8,8 +8,7 @@ import soundfile as sf
 import evaluate_generated_audio
 import json
 import argparse
-import numpy as np
-import scipy.stats as stats
+import subprocess
 
 """
 Sample command line:
@@ -20,17 +19,11 @@ Sample command line:
  # Paarth's decoder context checkpoint
  python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
  
-"""
+# with copy from cs-oci and with CFG
+  CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 12 --out_dir /datap/misc/decoder_context_with_cfg
 
-"""
-Sample command line:
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output 
- # with cfg
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output/with_cfg --use_cfg --cfg_scale 1.8 --batch_size 12
-
- # Paarth's decoder context checkpoint
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
- 
+# with copy from cs-oci and no CFG
+ CUDA_VISIBLE_DEVICES=1 python scripts/t5tts/infer_and_evaluate.py --batch_size 12 --out_dir /datap/misc/decoder_context_no_cfg
 """
 # dataset_meta_info = {
 #     'vctk': {
@@ -239,6 +232,26 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
             print(f"Wrote metrics with CI for {checkpoint_name} and {dataset} to {all_experiment_csv_with_ci}")
 
 
+def compare_md5sums(local_path, remote_path, server_address):
+    print(f"Comparing md5sum for {local_path} with remote file {server_address}:{remote_path}...")
+    cmd = f"ssh {server_address} " + f"\"md5sum {remote_path}\""
+    # MD5_VALUE=$(ssh user@remote-host "md5sum /path/to/file" | awk '{ print \$1 }')
+    remote_output = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    remote_md5 = remote_output.stdout.split()[0]
+
+    cmd = f"md5sum {local_path}"
+    local_output = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    local_md5 = local_output.stdout.split()[0]
+    is_same = remote_md5 == local_md5
+    if is_same:
+        print("Local and remote checkpoints have the SAME md5sum")
+    else:
+        print("Local and remote checkpoints have the *DIFFERENT* md5sum")
+
+    return is_same
+    
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='Experiment Evaluation')
@@ -306,11 +319,15 @@ def main():
 
             checkpoint_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_epoch_{epoch_num}.ckpt")
             hparams_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_hparams.yaml")
-            
-            scp_command = f"scp {args.server_address}:{last_checkpoint_path_draco} {checkpoint_copy_path}"
-            print(f"Running command: {scp_command}")
-            os.system(scp_command)
-            print("Copied checkpoint.")
+
+            if os.path.exists(checkpoint_copy_path) and \
+                compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address):
+                print(f"Checkpoint already exists locally, skipping copy!\n\t{checkpoint_copy_path}")
+            else:
+                scp_command = f"scp {args.server_address}:{last_checkpoint_path_draco} {checkpoint_copy_path}"
+                print(f"Running command: {scp_command}")
+                os.system(scp_command)
+                print("Copied checkpoint.")
             hparams_path_draco = hparams_file.replace(BASE_EXP_DIR, DRACO_EXP_DIR)
             scp_command_hparams = f"scp {args.server_address}:{hparams_path_draco} {hparams_copy_path}"
             print(f"Running command: {scp_command_hparams}")

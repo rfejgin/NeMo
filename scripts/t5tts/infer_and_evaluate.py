@@ -24,6 +24,9 @@ Sample command line:
 
 # with copy from cs-oci and no CFG
  CUDA_VISIBLE_DEVICES=1 python scripts/t5tts/infer_and_evaluate.py --batch_size 12 --out_dir /datap/misc/decoder_context_no_cfg
+
+# debug
+CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 12 --exp_names decoder_context --out_dir debug --debug
 """
 # dataset_meta_info = {
 #     'vctk': {
@@ -86,7 +89,7 @@ dataset_meta_info = {
     }
 }
 
-def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix:str, audio_dir:str, sample_rate:int, item_index:int):
+def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audio_dir: str, sample_rate: int, item_index: int):
     for idx in range(t.size(0)):
         audio_np = t[idx].float().detach().cpu().numpy()
         audio_np = audio_np[:lengths[idx]]
@@ -198,20 +201,13 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                                 audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
                 write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
                                 audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
+                # todo read target codes and use model.codes_to_audio to convert to audio, then write out
+                # (alternatively: save actual audio file path in dataloader and here just copy it - not same thing since it's doesn't get coded
                 item_idx += predicted_audio.size(0)
-        
-            metrics, filewise_metrics = evaluate_generated_audio.evaluate(
-                dataset_meta[dataset]['manifest_path'],
-                dataset_meta[dataset]['audio_dir'],
-                audio_dir
-            )
-            metrics_n_repeated.append(metrics)
-            with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
-                json.dump(metrics, f, indent=4)
-            
-            with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
-                # Indent for better readability
-                json.dump(filewise_metrics, f, indent=4)
+                metrics = evaluate_generated_audio.evaluate(
+                    dataset_meta[dataset]['manifest_path'],
+                    dataset_meta[dataset]['audio_dir'],
+                    audio_dir)
 
             all_experiment_csv = os.path.join(out_dir, "all_experiment_metrics.csv")
             if not os.path.exists(all_experiment_csv):
@@ -244,9 +240,9 @@ def compare_md5sums(local_path, remote_path, server_address):
     local_md5 = local_output.stdout.split()[0]
     is_same = remote_md5 == local_md5
     if is_same:
-        print("Local and remote checkpoints have the SAME md5sum")
+        print("MATCHING checksum for local and remote checkpoints")
     else:
-        print("Local and remote checkpoints have the *DIFFERENT* md5sum")
+        print("DIFFERENT checksum for local and remote checkpoints")
 
     return is_same
     
@@ -270,29 +266,24 @@ def main():
     parser.add_argument('--cfg_scale', type=float, default=1.0)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--num_repeats', type=int, default=1)
+    parser.add_argument('--debug', action='store_true', help="Run a subset of dataset for debugging purporses")
+
     args = parser.parse_args()
 
-    if (args.hparams_files is not None) and (args.checkpoint_files is not None) and (args.hparams_files != "null"):
-        hparam_files = args.hparams_files.split(",")
-        checkpoint_files = args.checkpoint_files.split(",")
-        print("Running inference for hparams files: ", hparam_files)
-        print("Running inference for checkpoint files: ", checkpoint_files)
-        assert len(hparam_files) == len(checkpoint_files), "Number of hparams files and checkpoint files should be the same."
-        for hparams_file, checkpoint_file in zip(hparam_files, checkpoint_files):
-            run_inference(
-                hparams_file, 
-                checkpoint_file,
-                args.datasets.split(","),
-                args.out_dir,
-                args.temperature,
-                args.topk,
-                args.codecmodel_path,
-                args.use_cfg,
-                args.cfg_scale,
-                args.batch_size,
-                args.num_repeats
-            )
+    if (args.hparams_file is not None) and (args.checkpoint_file is not None) and (args.hparams_file != "null"):
+        run_inference(
+            args.hparams_file, 
+            args.checkpoint_file, 
+            args.datasets.split(","), 
+            args.out_dir, 
+            args.temperature, 
+            args.topk,
+            args.codecmodel_path,
+            args.use_cfg,
+            args.cfg_scale,
+            args.batch_size,
+            args.debug
+        )
         return
     else:
         BASE_EXP_DIR = args.base_exp_dir
@@ -316,8 +307,9 @@ def main():
                 continue
             last_checkpoint_path_draco = last_checkpoint.replace(BASE_EXP_DIR, DRACO_EXP_DIR) 
             epoch_num = last_checkpoint.split("epoch=")[1].split("-")[0]
+            val_loss = last_checkpoint.split("val_loss=")[1].split("-")[0]
 
-            checkpoint_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_epoch_{epoch_num}.ckpt")
+            checkpoint_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_val_loss_{val_loss}_epoch_{epoch_num}.ckpt")
             hparams_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_hparams.yaml")
 
             if os.path.exists(checkpoint_copy_path) and \
@@ -328,6 +320,8 @@ def main():
                 print(f"Running command: {scp_command}")
                 os.system(scp_command)
                 print("Copied checkpoint.")
+                assert compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address), "Checksums don't match after coping checkpoint from remote server! This should only happen if the server is actively producing new checkpoints right now."
+
             hparams_path_draco = hparams_file.replace(BASE_EXP_DIR, DRACO_EXP_DIR)
             scp_command_hparams = f"scp {args.server_address}:{hparams_path_draco} {hparams_copy_path}"
             print(f"Running command: {scp_command_hparams}")
@@ -336,19 +330,26 @@ def main():
             # import ipdb; ipdb.set_trace()
             print("Hparams file path: ", hparams_copy_path)
             print("Checkpoint file path: ", checkpoint_copy_path)
-            run_inference(
-                hparams_copy_path, 
-                checkpoint_copy_path, 
-                args.datasets.split(","), 
-                args.out_dir, 
-                args.temperature, 
-                args.topk, 
-                args.codecmodel_path, 
-                args.use_cfg,
-                args.cfg_scale,
-                args.batch_size
-            )
-            
+            try:
+                run_inference(
+                    hparams_copy_path, 
+                    checkpoint_copy_path, 
+                    args.datasets.split(","), 
+                    args.out_dir, 
+                    args.temperature, 
+                    args.topk, 
+                    args.codecmodel_path, 
+                    args.use_cfg,
+                    args.cfg_scale,
+                    args.batch_size,
+                    debug=args.debug
+                )
+            except Exception as e:
+                 print("\n*** ***\n")
+                 print(f"Error during inferencing of {checkpoint_copy_path}")
+                 print(e)
+                 print("\Continuing to next checkpoint...")
+                 print("\n*** ***\n") 
 
 if __name__ == '__main__':
     main()

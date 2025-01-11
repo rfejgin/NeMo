@@ -58,10 +58,11 @@ def process_text(input_text):
     return single_space_text
 
 
-def evaluate(manifest_path, audio_dir, generated_audio_dir):
+def evaluate(manifest_path, audio_dir, generated_audio_dir, debug=False):
     audio_file_lists = find_sample_audios(generated_audio_dir)
     records = read_manifest(manifest_path)
-    assert len(audio_file_lists) == len(records)
+    if not debug:
+        assert len(audio_file_lists) == len(records)
 
     device = "cuda"
     asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(
@@ -75,7 +76,10 @@ def evaluate(manifest_path, audio_dir, generated_audio_dir):
     speaker_verification_model = speaker_verification_model.to(device)
     speaker_verification_model.eval()
 
-    speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name='titanet_small') 
+    # HACK: work around massive label printout issue by removing titanet_small (and using titanet_large again)
+    print("WARNING: *not* using a different model for the alternate SV since titanet_small has an issue of printing out its entire set of labels")
+    speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name='titanet_large') 
+    #speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name='titanet_small') 
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
 
@@ -83,6 +87,8 @@ def evaluate(manifest_path, audio_dir, generated_audio_dir):
     pred_texts = []
     gt_texts = []
     for ridx, record in enumerate(records):
+        if debug and ridx >= len(audio_file_lists):
+            break
         gt_audio_filepath = record['audio_filepath']
         context_audio_filepath = record.get('context_audio_filepath', None)
         if audio_dir is not None:

@@ -746,7 +746,7 @@ class T5TTS_Model(ModelPT):
             if self.use_kv_cache_for_inference:
                 assert self.cfg.t5_decoder.use_flash_self_attention is False, "KV cache is not supported with flash self attention"
                 assert self.cfg.t5_decoder.use_flash_x_attention is False, "KV cache is not supported with flash cross attention"
-                assert self.cfg.t5_decoder.pos_emb.name == "learnable", "KV cache is not tested with Rope, Alibi yet. Disable this assert, if you still want to use it."
+                assert self.cfg.t5_decoder.pos_emb.name in ["learnable", "learnable_v2"], "KV cache is not tested with Rope, Alibi yet. Disable this assert, if you still want to use it."
 
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
             
@@ -822,7 +822,8 @@ class T5TTS_Model(ModelPT):
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
                         pred_token = all_codes_next_argmax[item_idx][0].item()
-                        if pred_token == self.audio_eos_id:
+                        pred_token_multinomial = audio_codes_next[item_idx][0].item()
+                        if (pred_token == self.audio_eos_id) or (pred_token_multinomial == self.audio_eos_id):
                             print("End detected for item {} at timestep {}".format(item_idx, idx))
                             end_indices[item_idx] = idx
 
@@ -840,6 +841,7 @@ class T5TTS_Model(ModelPT):
 
             predicted_audio, predicted_audio_lens = self.codes_to_audio(predicted_codes, predicted_codes_lens)
             
+            torch.cuda.empty_cache()
             return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens
 
     def test_step(self, batch, batch_idx):

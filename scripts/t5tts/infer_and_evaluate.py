@@ -8,7 +8,10 @@ import soundfile as sf
 import evaluate_generated_audio
 import json
 import argparse
+import numpy as np
+import scipy.stats as stats
 import subprocess
+import inspect
 
 """
 Sample command line:
@@ -76,7 +79,26 @@ dataset_meta_info = {
         'audio_dir' : '/datap/misc/Datasets/LibriTTS',
         'feature_dir' : '/datap/misc/Datasets/LibriTTS',
     },
-
+    'riva_challenging': {
+        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
+        'audio_dir' : '/datap/misc/Datasets/riva',
+        'feature_dir' : '/datap/misc/Datasets/riva',
+    },
+    'libri_dev_clean_eval_small': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset.json',
+        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
+        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
+    },
+    'libri_val': {
+        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
+        'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+        'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+    },
+    'libri_unseen_val': {
+        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/dev_clean_withContextAudioPaths_evalset.json',
+        'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+        'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+    }
 }
 
 def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audio_dir: str, sample_rate: int, item_index: int):
@@ -89,7 +111,18 @@ def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audi
     return item_index
         
 
-def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, debug=False):
+def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
+    metrics = {}
+    for key in metric_keys:
+        measurements = [m[key] for m in metrics_list]
+        mean = np.mean(measurements)
+        std_err = stats.sem(measurements)
+        confidence_interval = std_err * stats.t.ppf((1 + confidence) / 2, len(measurements) - 1)
+        print(f"{key}: {mean} +/- {confidence_interval}")
+        metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
+    return metrics
+
+def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, debug=False):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
 
@@ -105,7 +138,7 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
 
 
     model = T5TTS_Model(cfg=model_cfg)
-    if model_cfg.t5_decoder.pos_emb == "learnable":
+    if model_cfg.t5_decoder.pos_emb.name in ["learnable", "learnable_v2"]:
         if (model_cfg.t5_decoder.use_flash_self_attention) is False and (model_cfg.t5_decoder.use_flash_self_attention is False):
             model.use_kv_cache_for_inference = True
 
@@ -122,67 +155,63 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
     checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale)
     
     for dataset in datasets:
-        eval_dir = os.path.join(out_dir, "{}_{}".format(checkpoint_name, dataset))
-        audio_dir = os.path.join(eval_dir, "audio")
-        os.makedirs(audio_dir, exist_ok=True) 
-        dataset_meta = {dataset: dataset_meta_info[dataset]}
-        test_dataset = T5TTSDataset(
-            dataset_meta=dataset_meta,
-            sample_rate=model_cfg.sample_rate,
-            min_duration=0.5,
-            max_duration=20,
-            codec_model_downsample_factor=model_cfg.codec_model_downsample_factor,
-            bos_id=model.bos_id,
-            eos_id=model.eos_id,
-            context_audio_bos_id=model.context_audio_bos_id,
-            context_audio_eos_id=model.context_audio_eos_id,
-            audio_bos_id=model.audio_bos_id,
-            audio_eos_id=model.audio_eos_id,
-            num_audio_codebooks=model_cfg.num_audio_codebooks,
-            prior_scaling_factor=None,
-            load_cached_codes_if_available=True,
-            dataset_type='test',
-            tokenizer_config=None,
-            load_16khz_audio=model.model_type == 'single_encoder_sv_tts',
-            use_text_conditioning_tokenizer=model.use_text_conditioning_encoder,
-            pad_context_text_to_max_duration=model.pad_context_text_to_max_duration,
-            context_duration_min=model.cfg.get('context_duration_min', 5.0),
-            context_duration_max=model.cfg.get('context_duration_max', 5.0),
-        )
-        test_dataset.text_tokenizer, test_dataset.text_conditioning_tokenizer = model._setup_tokenizers(model.cfg, mode='test')
+        metrics_n_repeated = []
+        for repeat_idx in range(num_repeats):
+            eval_dir = os.path.join(out_dir, "{}_{}".format(checkpoint_name, dataset))
+            audio_dir = os.path.join(eval_dir, "audio")
+            os.makedirs(audio_dir, exist_ok=True) 
+            dataset_meta = {dataset: dataset_meta_info[dataset]}
+            test_dataset = T5TTSDataset(
+                dataset_meta=dataset_meta,
+                sample_rate=model_cfg.sample_rate,
+                min_duration=0.5,
+                max_duration=20,
+                codec_model_downsample_factor=model_cfg.codec_model_downsample_factor,
+                bos_id=model.bos_id,
+                eos_id=model.eos_id,
+                context_audio_bos_id=model.context_audio_bos_id,
+                context_audio_eos_id=model.context_audio_eos_id,
+                audio_bos_id=model.audio_bos_id,
+                audio_eos_id=model.audio_eos_id,
+                num_audio_codebooks=model_cfg.num_audio_codebooks,
+                prior_scaling_factor=None,
+                load_cached_codes_if_available=True,
+                dataset_type='test',
+                tokenizer_config=None,
+                load_16khz_audio=model.model_type == 'single_encoder_sv_tts',
+                use_text_conditioning_tokenizer=model.use_text_conditioning_encoder,
+                pad_context_text_to_max_duration=model.pad_context_text_to_max_duration,
+                context_duration_min=model.cfg.get('context_duration_min', 5.0),
+                context_duration_max=model.cfg.get('context_duration_max', 5.0),
+            )
+            test_dataset.text_tokenizer, test_dataset.text_conditioning_tokenizer = model._setup_tokenizers(model.cfg, mode='test')
 
-        test_data_loader = torch.utils.data.DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            collate_fn=test_dataset.collate_fn,
-            num_workers=2,
-            shuffle=False
-        )
+            test_data_loader = torch.utils.data.DataLoader(
+                test_dataset,
+                batch_size=batch_size,
+                collate_fn=test_dataset.collate_fn,
+                num_workers=2,
+                shuffle=False
+            )
 
-        item_idx = 0
-        for bidx, batch in enumerate(test_data_loader):
-            if debug and item_idx > 0:
-                print("WARNING: exiting after one batch because debug=True")
-                break
-            #dict_keys(['dataset_names', 'raw_texts', 'audio_filepaths', 'text', 'text_lens', 'audio_codes', 'audio_codes_lens', 'context_audio', 'context_audio_lens', 'context_text_tokens', 'context_text_tokens_lens', 'has_text_context'])
-            print("Processing batch {} out of {} of dataset {}".format(bidx, len(test_data_loader), dataset))
-            batch_cuda ={}
-            for key in batch:
-                if isinstance(batch[key], torch.Tensor):
-                    batch_cuda[key] = batch[key].cuda()
-                else:
-                    batch_cuda[key] = batch[key]
-            
-            predicted_audio, predicted_audio_lens, _, _ = model.infer_batch(batch_cuda, max_decoder_steps=500, temperature=temperature, topk=topk, use_cfg=use_cfg, cfg_scale=cfg_scale)
-
-            if False:
-                for idx in range(predicted_audio.size(0)):
-                    predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
-                    predicted_audio_np = predicted_audio_np[:predicted_audio_lens[idx]]
-                    audio_path = os.path.join(audio_dir, f"predicted_audio_{item_idx}.wav")
-                    sf.write(audio_path, predicted_audio_np, model.cfg.sample_rate)
-                    item_idx += 1            
-            else:
+            item_idx = 0
+            for bidx, batch in enumerate(test_data_loader):
+                if debug and item_idx > 0:
+                    print("WARNING: exiting after one batch because debug=True")
+                    break
+                print("Processing batch {} out of {} of dataset {}".format(bidx, len(test_data_loader), dataset))
+                batch_cuda ={}
+                for key in batch:
+                    if isinstance(batch[key], torch.Tensor):
+                        batch_cuda[key] = batch[key].cuda()
+                    else:
+                        batch_cuda[key] = batch[key]
+                
+                import time
+                st = time.time()
+                predicted_audio, predicted_audio_lens, _, _ = model.infer_batch(batch_cuda, max_decoder_steps=500, temperature=temperature, topk=topk, use_cfg=use_cfg, cfg_scale=cfg_scale)
+                et = time.time()
+                print(f"Time taken for inference: {et-st}", predicted_audio.size())
                 write_audio_tensor(t=predicted_audio, lengths=predicted_audio_lens, prefix="predicted_audio", 
                                 audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
                 write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
@@ -191,25 +220,36 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                 # todo read target codes and use model.codes_to_audio to convert to audio, then write out
                 # (alternatively: save actual audio file path in dataloader and here just copy it - not same thing since it's doesn't get coded
                 item_idx += predicted_audio.size(0)
-        metrics = evaluate_generated_audio.evaluate(
-            dataset_meta[dataset]['manifest_path'],
-            dataset_meta[dataset]['audio_dir'],
-            audio_dir,
-            debug
-        )
+            
+            metrics, filewise_metrics = evaluate_generated_audio.evaluate(
+                dataset_meta[dataset]['manifest_path'],
+                dataset_meta[dataset]['audio_dir'],
+                audio_dir,
+                debug=debug
+            )
+            metrics_n_repeated.append(metrics)
+            with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
+                json.dump(metrics, f, indent=4)
+            with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
+                # Indent for better readability
+                json.dump(filewise_metrics, f, indent=4)
+            all_experiment_csv = os.path.join(out_dir, "all_experiment_metrics.csv")
+            if not os.path.exists(all_experiment_csv):
+                with open(all_experiment_csv, "w") as f:
+                    f.write("checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate\n")
+            with open(all_experiment_csv, "a") as f:
+                f.write(f"{checkpoint_name},{dataset},{metrics['cer_filewise_avg']},{metrics['wer_filewise_avg']},{metrics['cer_cumulative']},{metrics['wer_cumulative']},{metrics['ssim_pred_gt_avg']},{metrics['ssim_pred_context_avg']},{metrics['ssim_gt_context_avg']},{metrics['ssim_pred_gt_avg_alternate']},{metrics['ssim_pred_context_avg_alternate']},{metrics['ssim_gt_context_avg_alternate']}\n")
+                print(f"Wrote metrics for {checkpoint_name} and {dataset} to {all_experiment_csv}")
 
-        with open(os.path.join(eval_dir, f"{dataset}_metrics.json"), "w") as f:
-            json.dump(metrics, f)
-
-        all_experiment_csv = os.path.join(out_dir, "all_experiment_metrics.csv")
-        if not os.path.exists(all_experiment_csv):
-            with open(all_experiment_csv, "w") as f:
+        metric_keys = ['cer_filewise_avg', 'wer_filewise_avg', 'cer_cumulative', 'wer_cumulative', 'ssim_pred_gt_avg', 'ssim_pred_context_avg', 'ssim_gt_context_avg', 'ssim_pred_gt_avg_alternate', 'ssim_pred_context_avg_alternate', 'ssim_gt_context_avg_alternate']
+        metrics_mean_ci = compute_mean_and_confidence_interval(metrics_n_repeated, metric_keys)
+        all_experiment_csv_with_ci = os.path.join(out_dir, "all_experiment_metrics_with_ci.csv")
+        if not os.path.exists(all_experiment_csv_with_ci):
+            with open(all_experiment_csv_with_ci, "w") as f:
                 f.write("checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate\n")
-        with open(all_experiment_csv, "a") as f:
-            f.write(f"{checkpoint_name},{dataset},{metrics['cer_filewise_avg']},{metrics['wer_filewise_avg']},{metrics['cer_cumulative']},{metrics['wer_cumulative']},{metrics['ssim_pred_gt_avg']},{metrics['ssim_pred_context_avg']},{metrics['ssim_gt_context_avg']},{metrics['ssim_pred_gt_avg_alternate']},{metrics['ssim_pred_context_avg_alternate']},{metrics['ssim_gt_context_avg_alternate']}\n")
-            print(f"Wrote metrics for {checkpoint_name} and {dataset} to {all_experiment_csv}")
-        if debug:
-            print("WARNING: used a subset of data for debugging!")
+        with open(all_experiment_csv_with_ci, "a") as f:
+            f.write(f"{checkpoint_name},{dataset},{metrics_mean_ci['cer_filewise_avg']},{metrics_mean_ci['wer_filewise_avg']},{metrics_mean_ci['cer_cumulative']},{metrics_mean_ci['wer_cumulative']},{metrics_mean_ci['ssim_pred_gt_avg']},{metrics_mean_ci['ssim_pred_context_avg']},{metrics_mean_ci['ssim_gt_context_avg']},{metrics_mean_ci['ssim_pred_gt_avg_alternate']},{metrics_mean_ci['ssim_pred_context_avg_alternate']},{metrics_mean_ci['ssim_gt_context_avg_alternate']}\n")
+            print(f"Wrote metrics with CI for {checkpoint_name} and {dataset} to {all_experiment_csv_with_ci}")
 
 
 def compare_md5sums(local_path, remote_path, server_address):
@@ -250,6 +290,7 @@ def main():
     parser.add_argument('--cfg_scale', type=float, default=1.0)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--num_repeats', type=int, default=1)
     parser.add_argument('--debug', action='store_true', help="Run a subset of dataset for debugging purporses")
 
     args = parser.parse_args()
@@ -266,7 +307,8 @@ def main():
             args.use_cfg,
             args.cfg_scale,
             args.batch_size,
-            args.debug
+            num_repeats=args.num_repeats,
+            debug=args.debug
         )
         return
     else:
@@ -326,10 +368,12 @@ def main():
                     args.use_cfg,
                     args.cfg_scale,
                     args.batch_size,
+                    num_repeats=args.num_repeats,
                     debug=args.debug
                 )
             except Exception as e:
                  print("\n*** ***\n")
+                 print(f"Exception: {e}")
                  print(f"Error during inferencing of {checkpoint_copy_path}")
                  print(e)
                  print("\Continuing to next checkpoint...")

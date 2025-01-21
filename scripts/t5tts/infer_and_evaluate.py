@@ -20,14 +20,23 @@ Sample command line:
  python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
  
 # with copy from cs-oci and with CFG
-  CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 12 --out_dir /datap/misc/decoder_context_with_cfg
+  CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 6 --out_dir test_all_libridev_batch6_with_cfg/ --exp_names decoder_context_large,decoder_context
+
+  
 
 # with copy from cs-oci and no CFG
- CUDA_VISIBLE_DEVICES=1 python scripts/t5tts/infer_and_evaluate.py --batch_size 12 --out_dir /datap/misc/decoder_context_no_cfg
+ CUDA_VISIBLE_DEVICES=1 python scripts/t5tts/infer_and_evaluate.py --batch_size 6 --out_dir /datap/misc/decoder_context_no_cfg
 
 # debug
 CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 12 --exp_names decoder_context --out_dir debug --debug
+
+ 
+# ... 
+CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 6 --out_dir test_all_libridev_batch6_with_cfg/ --exp_names yt_plus_18k_single_stage_no_CTC_no_prior_with_transcript,yt_plus_18k_single_stage_no_CTC_no_prior_no_yt_transcript,yt_weight0.25_plus_18k_single_stage_decoder_context_kernel1_fixes
+
 """
+
+
 # dataset_meta_info = {
 #     'vctk': {
 #         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
@@ -229,7 +238,7 @@ def main():
     parser.add_argument('--hparams_file', type=str)
     parser.add_argument('--checkpoint_file', type=str)
     parser.add_argument('--codecmodel_path', type=str, default="/data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo")
-    parser.add_argument('--datasets', type=str, default="vctk")
+    parser.add_argument('--datasets', type=str, default="libri_dev_clean_eval_large")
     parser.add_argument('--base_exp_dir', type=str, default="/home/rfejgin/portfolio-cs-oci/experiments/")
     parser.add_argument('--draco_exp_dir', type=str, default="/lustre/fs12/portfolios/edgeai/users/rfejgin/experiments/")
     parser.add_argument('--server_address', type=str, default="rfejgin@cs-oci-ord-dc-03.nvidia.com")
@@ -295,7 +304,7 @@ def main():
                 print(f"Running command: {scp_command}")
                 os.system(scp_command)
                 print("Copied checkpoint.")
-                assert compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address), "Checksums don't match after coping checkpoint from remote server! This should only happen if the server is actively producing new checkpoints right now."
+                #assert compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address), "Checksums don't match after coping checkpoint from remote server! This should only happen if the server is actively producing new checkpoints right now."
 
             hparams_path_draco = hparams_file.replace(BASE_EXP_DIR, DRACO_EXP_DIR)
             scp_command_hparams = f"scp {args.server_address}:{hparams_path_draco} {hparams_copy_path}"

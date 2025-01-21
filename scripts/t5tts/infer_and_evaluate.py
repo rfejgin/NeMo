@@ -81,10 +81,10 @@ dataset_meta_info = {
         'audio_dir' : '/datap/misc/Datasets/riva',
         'feature_dir' : '/datap/misc/Datasets/riva',
     },
-    'riva_challenging_nozeros': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
-        'audio_dir' : '/datap/misc/Datasets/riva',
-        'feature_dir' : '/datap/misc/Datasets/riva',
+    'libri_dev_clean_eval_small': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset.json',
+        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
+        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
     },
     'libri_val': {
         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
@@ -210,13 +210,15 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                                 audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
                 write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
                                 audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
+                
                 # todo read target codes and use model.codes_to_audio to convert to audio, then write out
                 # (alternatively: save actual audio file path in dataloader and here just copy it - not same thing since it's doesn't get coded
                 item_idx += predicted_audio.size(0)
-                metrics = evaluate_generated_audio.evaluate(
-                    dataset_meta[dataset]['manifest_path'],
-                    dataset_meta[dataset]['audio_dir'],
-                    audio_dir)
+            
+            metrics = evaluate_generated_audio.evaluate(
+                dataset_meta[dataset]['manifest_path'],
+                dataset_meta[dataset]['audio_dir'],
+                audio_dir)
 
             all_experiment_csv = os.path.join(out_dir, "all_experiment_metrics.csv")
             if not os.path.exists(all_experiment_csv):
@@ -329,7 +331,7 @@ def main():
                 print(f"Running command: {scp_command}")
                 os.system(scp_command)
                 print("Copied checkpoint.")
-                #assert compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address), "Checksums don't match after coping checkpoint from remote server! This should only happen if the server is actively producing new checkpoints right now."
+                assert compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address), "Checksums don't match after coping checkpoint from remote server! This should only happen if the server is actively producing new checkpoints right now."
 
             hparams_path_draco = hparams_file.replace(BASE_EXP_DIR, DRACO_EXP_DIR)
             scp_command_hparams = f"scp {args.server_address}:{hparams_path_draco} {hparams_copy_path}"

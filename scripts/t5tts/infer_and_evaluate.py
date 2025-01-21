@@ -8,7 +8,10 @@ import soundfile as sf
 import evaluate_generated_audio
 import json
 import argparse
+import numpy as np
+import scipy.stats as stats
 import subprocess
+import inspect
 
 """
 Sample command line:
@@ -119,7 +122,7 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
 
-def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1):
+def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, debug=False):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
 
@@ -193,6 +196,9 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
 
             item_idx = 0
             for bidx, batch in enumerate(test_data_loader):
+                if debug and item_idx > 0:
+                    print("WARNING: exiting after one batch because debug=True")
+                    break
                 print("Processing batch {} out of {} of dataset {}".format(bidx, len(test_data_loader), dataset))
                 batch_cuda ={}
                 for key in batch:
@@ -215,11 +221,18 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                 # (alternatively: save actual audio file path in dataloader and here just copy it - not same thing since it's doesn't get coded
                 item_idx += predicted_audio.size(0)
             
-            metrics = evaluate_generated_audio.evaluate(
+            metrics, filewise_metrics = evaluate_generated_audio.evaluate(
                 dataset_meta[dataset]['manifest_path'],
                 dataset_meta[dataset]['audio_dir'],
-                audio_dir)
-
+                audio_dir,
+                debug=debug
+            )
+            metrics_n_repeated.append(metrics)
+            with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
+                json.dump(metrics, f, indent=4)
+            with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
+                # Indent for better readability
+                json.dump(filewise_metrics, f, indent=4)
             all_experiment_csv = os.path.join(out_dir, "all_experiment_metrics.csv")
             if not os.path.exists(all_experiment_csv):
                 with open(all_experiment_csv, "w") as f:
@@ -267,7 +280,7 @@ def main():
     parser.add_argument('--codecmodel_path', type=str, default="/data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo")
     parser.add_argument('--datasets', type=str, default="libri_dev_clean_eval_large")
     parser.add_argument('--base_exp_dir', type=str, default="/home/rfejgin/portfolio-cs-oci/experiments/")
-    parser.add_argument('--draco_exp_dir', type=str, default="/lustre/fsw/llmservice_nemo_speechlm/users/pneekhara/gitrepos/experiments/NewT5TTS_FixedPosEmb/AllKernselSize3")
+    parser.add_argument('--draco_exp_dir', type=str, default="/lustre/fs12/portfolios/edgeai/users/rfejgin/experiments/")
     parser.add_argument('--server_address', type=str, default="rfejgin@cs-oci-ord-dc-03.nvidia.com")
     parser.add_argument('--exp_names', type=str, default=None)
     parser.add_argument('--local_ckpt_dir', type=str, default="/datap/misc/continuouscheckpoints")
@@ -277,6 +290,7 @@ def main():
     parser.add_argument('--cfg_scale', type=float, default=1.0)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--num_repeats', type=int, default=1)
     parser.add_argument('--debug', action='store_true', help="Run a subset of dataset for debugging purporses")
 
     args = parser.parse_args()
@@ -293,7 +307,8 @@ def main():
             args.use_cfg,
             args.cfg_scale,
             args.batch_size,
-            args.debug
+            num_repeats=args.num_repeats,
+            debug=args.debug
         )
         return
     else:
@@ -353,10 +368,12 @@ def main():
                     args.use_cfg,
                     args.cfg_scale,
                     args.batch_size,
+                    num_repeats=args.num_repeats,
                     debug=args.debug
                 )
             except Exception as e:
                  print("\n*** ***\n")
+                 print(f"Exception: {e}")
                  print(f"Error during inferencing of {checkpoint_copy_path}")
                  print(e)
                  print("\Continuing to next checkpoint...")

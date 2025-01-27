@@ -13,22 +13,84 @@ import scipy.stats as stats
 import copy
 import shutil
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+import subprocess
+import inspect
+
+"""
+Sample command line:
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output 
+ # with cfg
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output/with_cfg --use_cfg --cfg_scale 1.8 --batch_size 12
+
+ # Paarth's decoder context checkpoint
+ python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
+ 
+# with copy from cs-oci and with CFG
+  CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 6 --out_dir test_all_libridev_batch6_with_cfg/ --exp_names decoder_context_large,decoder_context
+
+  
+
+# with copy from cs-oci and no CFG
+ CUDA_VISIBLE_DEVICES=1 python scripts/t5tts/infer_and_evaluate.py --batch_size 6 --out_dir /datap/misc/decoder_context_no_cfg
+
+# debug
+CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 12 --exp_names decoder_context --out_dir debug --debug
+
+ 
+# ... 
+CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 6 --out_dir test_all_libridev_batch6_with_cfg/ --exp_names yt_plus_18k_single_stage_no_CTC_no_prior_with_transcript,yt_plus_18k_single_stage_no_CTC_no_prior_no_yt_transcript,yt_weight0.25_plus_18k_single_stage_decoder_context_kernel1_fixes
+
+"""
+
+
+# dataset_meta_info = {
+#     'vctk': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
+#         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
+#         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
+#     },
+#     'riva_challenging': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
+#         'audio_dir' : '/datap/misc/Datasets/riva',
+#         'feature_dir' : '/datap/misc/Datasets/riva',
+#     },
+#     'riva_challenging_nozeros': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
+#         'audio_dir' : '/datap/misc/Datasets/riva',
+#         'feature_dir' : '/datap/misc/Datasets/riva',
+#     },
+#     'libri_val': {
+#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
+#         'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+#         'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
+#     }
+# }
 
 dataset_meta_info = {
     'vctk': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
+    },
+    'libri_dev_clean_eval_large': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset_large.json',
+        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
+        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
+    },
+    'libri_dev_clean_eval_small': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset.json',
+        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
+        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
     },
     'riva_challenging': {
         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
         'audio_dir' : '/datap/misc/Datasets/riva',
         'feature_dir' : '/datap/misc/Datasets/riva',
     },
-    'riva_challenging_nozeros': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
-        'audio_dir' : '/datap/misc/Datasets/riva',
-        'feature_dir' : '/datap/misc/Datasets/riva',
+    'libri_dev_clean_eval_small': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset.json',
+        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
+        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
     },
     'libri_val': {
         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
@@ -107,19 +169,28 @@ dataset_meta_info = {
     }
 }
 
+def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audio_dir: str, sample_rate: int, item_index: int):
+    for idx in range(t.size(0)):
+        audio_np = t[idx].float().detach().cpu().numpy()
+        audio_np = audio_np[:lengths[idx]]
+        audio_path = os.path.join(audio_dir, f"{prefix}_{item_index}.wav")
+        sf.write(audio_path, audio_np,sample_rate)
+        item_index += 1
+    return item_index
+        
+
 def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
     metrics = {}
     for key in metric_keys:
         measurements = [m[key] for m in metrics_list]
         mean = np.mean(measurements)
         std_err = stats.sem(measurements)
-
         confidence_interval = std_err * stats.t.ppf((1 + confidence) / 2, len(measurements) - 1)
         print(f"{key}: {mean} +/- {confidence_interval}")
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
 
-def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1):
+def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, debug=False):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
 
@@ -204,6 +275,9 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
 
             item_idx = 0
             for bidx, batch in enumerate(test_data_loader):
+                if debug and item_idx > 0:
+                    print("WARNING: exiting after one batch because debug=True")
+                    break
                 print("Processing batch {} out of {} of dataset {}".format(bidx, len(test_data_loader), dataset))
                 batch_cuda ={}
                 for key in batch:
@@ -217,37 +291,26 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                 predicted_audio, predicted_audio_lens, _, _ = model.infer_batch(batch_cuda, max_decoder_steps=500, temperature=temperature, topk=topk, use_cfg=use_cfg, cfg_scale=cfg_scale)
                 et = time.time()
                 print(f"Time taken for inference: {et-st}", predicted_audio.size())
-                for idx in range(predicted_audio.size(0)):
-                    predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
-                    predicted_audio_np = predicted_audio_np[:predicted_audio_lens[idx]]
-                    audio_path = os.path.join(audio_dir, f"predicted_audio_{item_idx}.wav")
-                    sf.write(audio_path, predicted_audio_np, model.cfg.sample_rate)
-                    context_audio_path = manifest_records[item_idx].get('context_audio_filepath', None)
-                    target_audio_path = manifest_records[item_idx].get('audio_filepath', None)
-                    if context_audio_path is not None:
-                        context_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], context_audio_path)
-                    if target_audio_path is not None:
-                        target_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], target_audio_path)
-                    if os.path.exists(context_audio_path):
-                        shutil.copy(context_audio_path, os.path.join(audio_dir, f"context_audio_{item_idx}.wav"))
-                    if os.path.exists(target_audio_path):
-                        shutil.copy(target_audio_path, os.path.join(audio_dir, f"target_audio_{item_idx}.wav"))
-                    item_idx += 1
+                write_audio_tensor(t=predicted_audio, lengths=predicted_audio_lens, prefix="predicted_audio", 
+                                audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
+                write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
+                                audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
+                
+                item_idx += predicted_audio.size(0)
             
             metrics, filewise_metrics = evaluate_generated_audio.evaluate(
                 dataset_meta[dataset]['manifest_path'],
                 dataset_meta[dataset]['audio_dir'],
                 audio_dir,
                 language=language,
+                debug=debug
             )
             metrics_n_repeated.append(metrics)
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
-            
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
                 # Indent for better readability
                 json.dump(filewise_metrics, f, indent=4)
-
             all_experiment_csv = os.path.join(out_dir, "all_experiment_metrics.csv")
             if not os.path.exists(all_experiment_csv):
                 with open(all_experiment_csv, "w") as f:
@@ -267,47 +330,64 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
             print(f"Wrote metrics with CI for {checkpoint_name} and {dataset} to {all_experiment_csv_with_ci}")
 
 
+def compare_md5sums(local_path, remote_path, server_address):
+    print(f"Comparing md5sum for {local_path} with remote file {server_address}:{remote_path}...")
+    cmd = f"ssh {server_address} " + f"\"md5sum {remote_path}\""
+    # MD5_VALUE=$(ssh user@remote-host "md5sum /path/to/file" | awk '{ print \$1 }')
+    remote_output = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    remote_md5 = remote_output.stdout.split()[0]
+
+    cmd = f"md5sum {local_path}"
+    local_output = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    local_md5 = local_output.stdout.split()[0]
+    is_same = remote_md5 == local_md5
+    if is_same:
+        print("MATCHING checksum for local and remote checkpoints")
+    else:
+        print("DIFFERENT checksum for local and remote checkpoints")
+
+    return is_same
+    
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='Experiment Evaluation')
-    parser.add_argument('--hparams_files', type=str, default="/datap/misc/continuouscheckpoints_ks3ks3/multiencoder_small_sp_ks3_hparams.yaml,/datap/misc/continuouscheckpoints_ks3ks3/decodercontext_small_sp_ks3Correct_hparams.yaml")
-    parser.add_argument('--checkpoint_files', type=str, default="/datap/misc/continuouscheckpoints_ks3ks3/multiencoder_small_sp_ks3_epoch302.ckpt,/datap/misc/continuouscheckpoints_ks3ks3/decodercontext_small_sp_ks3Correct_epoch305.ckpt")
-    parser.add_argument('--codecmodel_path', type=str, default="/datap/misc/checkpoints/AudioCodec_21Hz_no_eliz.nemo")
-    parser.add_argument('--datasets', type=str, default="libri_seen_test,libri_unseen_test")
-    parser.add_argument('--base_exp_dir', type=str, default="/datap/misc/eosmount4/AllKernselSize3/NewTransformer")
-    parser.add_argument('--draco_exp_dir', type=str, default="/lustre/fsw/llmservice_nemo_speechlm/users/pneekhara/gitrepos/experiments/NewT5TTS_FixedPosEmb/AllKernselSize3/NewTransformer")
-    parser.add_argument('--server_address', type=str, default="pneekhara@login-eos02.eos.clusters.nvidia.com")
-    parser.add_argument('--exp_names', type=str, default="multiencoder_small_sp_ks3_lnormapplied")
-    parser.add_argument('--local_ckpt_dir', type=str, default="/datap/misc/continuouscheckpoints_fixedposembrough")
-    parser.add_argument('--out_dir', type=str, default="/datap/misc/ContinuousEvalResults/NewTransformerKoelTTS")
+    parser.add_argument('--hparams_file', type=str)
+    parser.add_argument('--checkpoint_file', type=str)
+    parser.add_argument('--codecmodel_path', type=str, default="/data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo")
+    parser.add_argument('--datasets', type=str, default="libri_dev_clean_eval_large")
+    parser.add_argument('--base_exp_dir', type=str, default="/home/rfejgin/portfolio-cs-oci/experiments/")
+    parser.add_argument('--draco_exp_dir', type=str, default="/lustre/fs12/portfolios/edgeai/users/rfejgin/experiments/")
+    parser.add_argument('--server_address', type=str, default="rfejgin@cs-oci-ord-dc-03.nvidia.com")
+    parser.add_argument('--exp_names', type=str, default=None)
+    parser.add_argument('--local_ckpt_dir', type=str, default="/datap/misc/continuouscheckpoints")
+    parser.add_argument('--out_dir', type=str)
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--use_cfg', action='store_true')
     parser.add_argument('--cfg_scale', type=float, default=1.0)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_repeats', type=int, default=1)
+    parser.add_argument('--debug', action='store_true', help="Run a subset of dataset for debugging purporses")
+
     args = parser.parse_args()
 
-    if (args.hparams_files is not None) and (args.checkpoint_files is not None) and (args.hparams_files != "null"):
-        hparam_files = args.hparams_files.split(",")
-        checkpoint_files = args.checkpoint_files.split(",")
-        print("Running inference for hparams files: ", hparam_files)
-        print("Running inference for checkpoint files: ", checkpoint_files)
-        assert len(hparam_files) == len(checkpoint_files), "Number of hparams files and checkpoint files should be the same."
-        for hparams_file, checkpoint_file in zip(hparam_files, checkpoint_files):
-            run_inference(
-                hparams_file, 
-                checkpoint_file,
-                args.datasets.split(","),
-                args.out_dir,
-                args.temperature,
-                args.topk,
-                args.codecmodel_path,
-                args.use_cfg,
-                args.cfg_scale,
-                args.batch_size,
-                args.num_repeats
-            )
+    if (args.hparams_file is not None) and (args.checkpoint_file is not None) and (args.hparams_file != "null"):
+        run_inference(
+            args.hparams_file, 
+            args.checkpoint_file, 
+            args.datasets.split(","), 
+            args.out_dir, 
+            args.temperature, 
+            args.topk,
+            args.codecmodel_path,
+            args.use_cfg,
+            args.cfg_scale,
+            args.batch_size,
+            num_repeats=args.num_repeats,
+            debug=args.debug
+        )
         return
     else:
         BASE_EXP_DIR = args.base_exp_dir
@@ -331,14 +411,21 @@ def main():
                 continue
             last_checkpoint_path_draco = last_checkpoint.replace(BASE_EXP_DIR, DRACO_EXP_DIR) 
             epoch_num = last_checkpoint.split("epoch=")[1].split("-")[0]
+            val_loss = last_checkpoint.split("val_loss=")[1].split("-")[0]
 
-            checkpoint_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_epoch_{epoch_num}.ckpt")
+            checkpoint_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_val_loss_{val_loss}_epoch_{epoch_num}.ckpt")
             hparams_copy_path = os.path.join(args.local_ckpt_dir, f"{exp_name}_hparams.yaml")
-            
-            scp_command = f"scp {args.server_address}:{last_checkpoint_path_draco} {checkpoint_copy_path}"
-            print(f"Running command: {scp_command}")
-            os.system(scp_command)
-            print("Copied checkpoint.")
+
+            if os.path.exists(checkpoint_copy_path) and \
+                compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address):
+                print(f"Checkpoint already exists locally, skipping copy!\n\t{checkpoint_copy_path}")
+            else:
+                scp_command = f"scp {args.server_address}:{last_checkpoint_path_draco} {checkpoint_copy_path}"
+                print(f"Running command: {scp_command}")
+                os.system(scp_command)
+                print("Copied checkpoint.")
+                #assert compare_md5sums(local_path=checkpoint_copy_path, remote_path=last_checkpoint_path_draco, server_address=args.server_address), "Checksums don't match after coping checkpoint from remote server! This should only happen if the server is actively producing new checkpoints right now."
+
             hparams_path_draco = hparams_file.replace(BASE_EXP_DIR, DRACO_EXP_DIR)
             scp_command_hparams = f"scp {args.server_address}:{hparams_path_draco} {hparams_copy_path}"
             print(f"Running command: {scp_command_hparams}")
@@ -347,19 +434,28 @@ def main():
             # import ipdb; ipdb.set_trace()
             print("Hparams file path: ", hparams_copy_path)
             print("Checkpoint file path: ", checkpoint_copy_path)
-            run_inference(
-                hparams_copy_path, 
-                checkpoint_copy_path, 
-                args.datasets.split(","), 
-                args.out_dir, 
-                args.temperature, 
-                args.topk, 
-                args.codecmodel_path, 
-                args.use_cfg,
-                args.cfg_scale,
-                args.batch_size
-            )
-            
+            try:
+                run_inference(
+                    hparams_copy_path, 
+                    checkpoint_copy_path, 
+                    args.datasets.split(","), 
+                    args.out_dir, 
+                    args.temperature, 
+                    args.topk, 
+                    args.codecmodel_path, 
+                    args.use_cfg,
+                    args.cfg_scale,
+                    args.batch_size,
+                    num_repeats=args.num_repeats,
+                    debug=args.debug
+                )
+            except Exception as e:
+                 print("\n*** ***\n")
+                 print(f"Exception: {e}")
+                 print(f"Error during inferencing of {checkpoint_copy_path}")
+                 print(e)
+                 print("\Continuing to next checkpoint...")
+                 print("\n*** ***\n") 
 
 if __name__ == '__main__':
     main()

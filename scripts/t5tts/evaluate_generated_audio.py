@@ -164,7 +164,11 @@ def evaluate(manifest_path, audio_dir, generated_audio_dir, language="en", debug
 
                 pred_context_ssim_alternate = torch.nn.functional.cosine_similarity(pred_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0).item()
                 gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0).item()
-                
+            else:
+                pred_context_ssim = 0.0
+                gt_context_ssim = 0.0
+                pred_context_ssim_alternate = 0.0
+                gt_context_ssim_alternate = 0.0
         
 
         filewise_metrics.append({

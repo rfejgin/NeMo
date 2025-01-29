@@ -72,6 +72,16 @@ dataset_meta_info = {
         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
     },
+    'riva_val_audio_context': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/RivattsEnglishLindyRodney21fps_val_nemo_codec21_bw_6.0_phoneme_tts.json',
+        'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
+        'feature_dir' : '/',
+    },
+    'riva_val_text_context': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/RivattsEnglishLindyRodney21fps_val_nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_phoneme_tts_TextContext.json',
+        'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
+        'feature_dir' : '/',
+    },
     'libri_dev_clean_eval_large': {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset_large.json',
         'audio_dir' : '/datap/misc/Datasets/LibriTTS',
@@ -83,7 +93,7 @@ dataset_meta_info = {
         'feature_dir' : '/datap/misc/Datasets/LibriTTS',
     },
     'riva_challenging': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
         'audio_dir' : '/datap/misc/Datasets/riva',
         'feature_dir' : '/datap/misc/Datasets/riva',
     },
@@ -293,8 +303,9 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                 print(f"Time taken for inference: {et-st}", predicted_audio.size())
                 write_audio_tensor(t=predicted_audio, lengths=predicted_audio_lens, prefix="predicted_audio", 
                                 audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
-                write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
-                                audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
+                if 'context_audio' in batch:
+                    write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
+                                    audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
                 
                 item_idx += predicted_audio.size(0)
             
@@ -406,7 +417,8 @@ def main():
                 hparams_file = glob.glob(f"{exp_dir}/**/hparams.yaml", recursive=True)[0]
                 checkpoints_dir = glob.glob(f"{exp_dir}/**/checkpoints", recursive=True)[0]
                 last_checkpoint = (glob.glob(f"{checkpoints_dir}/*last.ckpt"))[0]
-            except:
+            except Exception as e:
+                print(f"Exception: {e}")
                 print(f"Skipping experiment {exp_name} as hparams or last checkpoint not found.")
                 continue
             last_checkpoint_path_draco = last_checkpoint.replace(BASE_EXP_DIR, DRACO_EXP_DIR) 

@@ -822,7 +822,18 @@ class T5TTS_Model(ModelPT):
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
             test_dl_batch_size = self._test_dl.batch_size
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens = self.infer_batch(batch, max_decoder_steps=self.cfg.get('max_decoder_steps', 500))
+            temperature = self.cfg.get('inference_temperature', 0.7)
+            topk = self.cfg.get('inference_topk', 80)
+            use_cfg = self.cfg.get('inference_use_cfg', False)
+            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens = self.infer_batch(
+                batch,
+                max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
+                temperature=temperature,
+                topk=topk,
+                use_cfg=use_cfg,
+                cfg_scale=cfg_scale
+            )
             for idx in range(predicted_audio.size(0)):
                 predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
                 predicted_audio_np = predicted_audio_np[:predicted_audio_lens[idx]]
@@ -958,13 +969,32 @@ class T5TTS_ModelInference(T5TTS_Model):
     """Small override to save inference metrics"""
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         super().__init__(cfg, trainer)
-        self.eval_asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(model_name="nvidia/parakeet-tdt-1.1b")
-        self.eval_asr_model.freeze()
-        self.eval_asr_model.eval()
+        if cfg.get('pref_set_language', "en") == "en":
+            self.eval_asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(model_name="nvidia/parakeet-tdt-1.1b")
+            self.eval_asr_model.freeze()
+            self.eval_asr_model.eval()
 
         self.eval_speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name='titanet_large')
         self.eval_speaker_verification_model.freeze()
         self.eval_speaker_verification_model.eval()
+
+        if cfg.get('load_whisper_model', False):
+            from transformers import WhisperProcessor, WhisperForConditionalGeneration
+            self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
+            self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
+            self.whisper_model.eval()
+
+    def transcribe_with_whisper(self, audio_filepath, language):
+        speech_array, sampling_rate = librosa.load(audio_filepath, sr=16000)
+        forced_decoder_ids = self.whisper_processor.get_decoder_prompt_ids(language=language) if language else None
+        inputs = self.whisper_processor(speech_array, sampling_rate=sampling_rate, return_tensors="pt").input_features
+        inputs = inputs.to(self.device)
+        with torch.no_grad():
+            predicted_ids = self.whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+        transcription = self.whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+        result = transcription[0]
+        return result
+
     
     def process_text(self, input_text):
         """
@@ -1018,7 +1048,18 @@ class T5TTS_ModelInference(T5TTS_Model):
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
             test_dl_batch_size = self._test_dl.batch_size
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens = self.infer_batch(batch, max_decoder_steps=self.cfg.get('max_decoder_steps', 500))
+            temperature = self.cfg.get('inference_temperature', 0.7)
+            topk = self.cfg.get('inference_topk', 80)
+            use_cfg = self.cfg.get('inference_use_cfg', False)
+            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens = self.infer_batch(
+                batch,
+                max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
+                temperature=temperature,
+                topk=topk,
+                use_cfg=use_cfg,
+                cfg_scale=cfg_scale
+            )
             predicted_audio_paths = []
             audio_durations = []
             batch_invalid = False
@@ -1043,7 +1084,12 @@ class T5TTS_ModelInference(T5TTS_Model):
                 if not batch_invalid:
                     with torch.no_grad():
                         try:
-                            pred_transcripts = self.eval_asr_model.transcribe(predicted_audio_paths, batch_size=len(predicted_audio_paths))[0]
+                            if self.cfg.get("pref_set_language", "en") == "en":
+                                pred_transcripts = self.eval_asr_model.transcribe(predicted_audio_paths, batch_size=len(predicted_audio_paths))[0]
+                                pred_transcripts = [ self.process_text(transcript) for transcript in pred_transcripts ]
+                            else:
+                                pred_transcripts = [self.transcribe_with_whisper(audio_path, self.cfg.pref_set_language) for audio_path in predicted_audio_paths]
+                                pred_transcripts = [self.process_text(transcript) for transcript in pred_transcripts]
                         except Exception as e:
                             assert (predicted_audio_lens[idx] < 1000).any(), f"Expected short audio file to be the only cause of ASR errors, but got error with lengths {predicted_audio_lens}"
                             logging.warning(f"Exception during ASR transcription: {e}")
@@ -1074,7 +1120,7 @@ class T5TTS_ModelInference(T5TTS_Model):
                     cer_gt = 1.0
                     wer_gt = 1.0
                     spk_similarity = 0.0
-                    pred_transcript = "<INVALID>"
+                    pred_transcript = "<INVALID>" # do not change this string; subsequent processing relies on it
                     gt_transcript = self.process_text(batch['raw_texts'][idx])
 
                 item_metrics = {
@@ -1099,7 +1145,7 @@ class T5TTS_ModelDPO(T5TTS_Model):
             ref_model_cfg.validation_ds = None
         self._reference_model = T5TTS_Model(cfg=ref_model_cfg)
         print("Loading reference model from checkpoint")
-        self._reference_model.load_state_dict(torch.load(cfg.reference_model_ckpt_path)['state_dict'])
+        self._reference_model.load_state_dict(torch.load(cfg.reference_model_ckpt_path, map_location="cpu")['state_dict'])
         self.freeze_model(self._reference_model)
         self._reference_model.eval()
         self._reference_model._no_state_dict = True

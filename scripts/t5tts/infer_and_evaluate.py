@@ -73,6 +73,11 @@ dataset_meta_info = {
         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
     },
+    'zs_subjective': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/zs_subjective_libridevclean_speakers_20.json',
+        'audio_dir': '/datap/misc/Datasets/LibriTTS/dev-clean-for-zs',
+        'feature_dir':'/'
+    },
     'riva_val_audio_context': {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/RivattsEnglishLindyRodney21fps_val_nemo_codec21_bw_6.0_phoneme_tts.json',
         'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",

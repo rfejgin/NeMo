@@ -825,7 +825,11 @@ class T5TTS_Model(ModelPT):
                     text_time_step_attended = []
                     for bidx in range(batch_size):
                         item_attention_scores = cross_attention_scores[bidx,2:context_tensors['text_lens'][bidx]-3] # Ignore first 2 and last 3 timesteps
-                        attended_timestep = item_attention_scores.argmax().item() + 2
+                        if len(item_attention_scores) == 0:
+                            # very short text - consider us to always be near the end of the utterance
+                            attended_timestep = context_tensors['text_lens'][bidx] - 1
+                        else:
+                            attended_timestep = item_attention_scores.argmax().item() + 2
                         text_time_step_attended.append(attended_timestep)
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
                 
@@ -836,10 +840,14 @@ class T5TTS_Model(ModelPT):
                     _attn_prior = _attn_prior.to(cross_attention_scores.device)
                     for bidx in range(cross_attention_scores.shape[0]):
                         if bidx < batch_size:
-                            _attn_prior[bidx, 0, text_time_step_attended[bidx]+1] = 1.0
-                            _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 1.0
-                            _attn_prior[bidx, 0, text_time_step_attended[bidx]+2] = 1.0
-                            unfinished_texts[bidx] = False
+                            if context_tensors['text_lens'][bidx] <=5:
+                                # no prior for very short texts
+                                _attn_prior[bidx, 0, :] = 1.0
+                            else:
+                                _attn_prior[bidx, 0, text_time_step_attended[bidx]+1] = 1.0
+                                _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 1.0
+                                _attn_prior[bidx, 0, text_time_step_attended[bidx]+2] = 1.0
+                                unfinished_texts[bidx] = False
                             if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 10:
                                 # This means the sentence has definitely not ended
                                 if bidx not in finished_texts_counter and bidx not in end_indices:

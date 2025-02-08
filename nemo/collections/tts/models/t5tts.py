@@ -46,6 +46,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import build_lhotse_dataloader, T5TTSLhotseDataset
+import random
 
 HAVE_WANDB = True
 try:
@@ -355,18 +356,23 @@ class T5TTS_Model(ModelPT):
 
         return all_preds
 
-    def sample_codes_from_logits(self, all_code_logits_t, temperature=0.7, topk=80):
+    def sample_codes_from_logits(self, all_code_logits_t, temperature=0.7, topk=80, unfinished_items={}, finished_items={}):
         # all_code_logits_t: (B, num_codebooks * num_tokens_per_codebook), logits at a given timestep
         all_preds = []
         for idx in range(self.cfg.num_audio_codebooks):
             si = idx * self.cfg.num_audio_tokens_per_codebook
             ei = si + self.cfg.num_audio_tokens_per_codebook
             codebook_logits = all_code_logits_t[:, si:ei] # (B, num_tokens_per_codebook)
+            for item_idx in unfinished_items:
+                codebook_logits[item_idx, self.audio_eos_id] = float('-inf')
+            for item_idx in finished_items:
+                codebook_logits[item_idx, :] = float('-inf')
+                codebook_logits[item_idx, self.audio_eos_id] = 0.0
+
             codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0] # (B, topk)
             indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(-1) # (B, num_tokens_per_codebook)
             codebook_logits_rescored = codebook_logits.clone()
             codebook_logits_rescored[indices_to_remove] = float('-inf')
-
             codebook_probs = torch.softmax(codebook_logits / temperature, dim=-1) # (B, num_tokens_per_codebook)
             codebook_preds = torch.multinomial(codebook_probs, 1) # (B, 1)
             all_preds.append(codebook_preds)
@@ -433,6 +439,12 @@ class T5TTS_Model(ModelPT):
         if global_step < prior_scaledown_start_step:
             return prior
         elif global_step >= prior_end_step:
+            if self.cfg.get('prior_always_applied', False):
+                # Added this so that model always knows how to work with and without the prior
+                if random.random() < 0.5:
+                    return prior
+                else:
+                    return None
             return None
         else:
             with torch.no_grad():
@@ -759,7 +771,7 @@ class T5TTS_Model(ModelPT):
             cross_attention_scores_all_timesteps = []
             _attn_prior = None
             unfinished_texts = {}
-            finished_texts = {}
+            finished_texts_counter = {}
             for idx in range(max_decoder_steps):
                 if idx % 20 == 0:
                     print(f"Decoding timestep {idx}")
@@ -809,17 +821,45 @@ class T5TTS_Model(ModelPT):
                     )
                 
                 if return_cross_attn_probs or apply_attention_prior:
-                    cross_attention_scores = self.get_cross_attention_scores(attn_probs, context_tensors['text_lens']) # B, text_timesteps
+                    cross_attention_scores = self.get_cross_attention_scores(attn_probs) # B, text_timesteps
                     text_time_step_attended = []
                     for bidx in range(batch_size):
                         item_attention_scores = cross_attention_scores[bidx,2:context_tensors['text_lens'][bidx]-3] # Ignore first 2 and last 3 timesteps
                         attended_timestep = item_attention_scores.argmax().item() + 2
                         text_time_step_attended.append(attended_timestep)
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
+                
+                if apply_attention_prior and idx > 8:
+                    eps = 1e-3
+                    # Attn prior for the next timestep
+                    _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + eps
+                    _attn_prior = _attn_prior.to(cross_attention_scores.device)
+                    for bidx in range(cross_attention_scores.shape[0]):
+                        if bidx < batch_size:
+                            _attn_prior[bidx, 0, text_time_step_attended[bidx]+1] = 1.0
+                            _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 1.0
+                            _attn_prior[bidx, 0, text_time_step_attended[bidx]+2] = 1.0
+                            unfinished_texts[bidx] = False
+                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 10:
+                                # This means the sentence has definitely not ended
+                                if bidx not in finished_texts_counter and bidx not in end_indices:
+                                    unfinished_texts[bidx] = True
+                            
+                            if text_time_step_attended[bidx] >= context_tensors['text_lens'][bidx] - 5 or bidx in end_indices:
+                                unfinished_texts[bidx] = False
+                                if bidx not in finished_texts_counter:
+                                    finished_texts_counter[bidx] = 0
+                                
+                            
+                for key in finished_texts_counter:
+                    finished_texts_counter[key] += 1
+                
+                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 10}
+                unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)
-                audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk) # (B, num_codebooks)
-                all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01) # (B, num_codebooks)
+                audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
+                all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
                 
 
                 for item_idx in range(all_codes_next_argmax.size(0)):
@@ -845,7 +885,13 @@ class T5TTS_Model(ModelPT):
             predicted_audio, predicted_audio_lens = self.codes_to_audio(predicted_codes, predicted_codes_lens)
             
             torch.cuda.empty_cache()
-            return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens
+            if return_cross_attn_probs:
+                cross_attention_scores_all_timesteps = torch.stack(cross_attention_scores_all_timesteps, dim=2) # B, text_timesteps, T'
+                cross_attn_np = plot_alignment_to_numpy(cross_attention_scores_all_timesteps[0].cpu().numpy())
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attn_np
+            else:
+                # For backward compatibility
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens
 
     def test_step(self, batch, batch_idx):
         with torch.no_grad():

@@ -33,18 +33,27 @@ def main():
     parser.add_argument("--output_manifest", type=str)
     args = parser.parse_args()
     
-    with open(args.challenging_texts, 'r') as f:
-        challenging_texts = f.readlines()
-        challenging_texts = [text.strip() for text in challenging_texts if text.strip() != '']
+    if args.challenging_texts is not None:
+        with open(args.challenging_texts, 'r') as f:
+            challenging_texts = f.readlines()
+            challenging_texts = [text.strip() for text in challenging_texts if text.strip() != '']
+    else:
+        challenging_texts = None
+        
+    if args.regular_texts_for_audiocontext is not None:
+        with open(args.regular_texts_for_audiocontext, 'r') as f:
+            regular_texts_for_audiocontext = f.readlines()
+            regular_texts_for_audiocontext = [text.strip() for text in regular_texts_for_audiocontext if text.strip() != '']
+    else:
+        regular_texts_for_audiocontext = []
     
-    with open(args.regular_texts_for_audiocontext, 'r') as f:
-        regular_texts_for_audiocontext = f.readlines()
-        regular_texts_for_audiocontext = [text.strip() for text in regular_texts_for_audiocontext if text.strip() != '']
-    
-    with open(args.regular_texts_for_textcontext, 'r') as f:
-        regular_texts_for_textcontext = f.readlines()
-        regular_texts_for_textcontext = [text.strip() for text in regular_texts_for_textcontext if text.strip() != '']
-    
+    if args.regular_texts_for_textcontext is not None:
+        with open(args.regular_texts_for_textcontext, 'r') as f:
+            regular_texts_for_textcontext = f.readlines()
+            regular_texts_for_textcontext = [text.strip() for text in regular_texts_for_textcontext if text.strip() != '']
+    else:
+        regular_texts_for_textcontext = None
+
     with open(args.audio_contexts, 'r') as f:
         audio_contexts = f.readlines()
         audio_contexts = [json.loads(context.strip()) for context in audio_contexts if context.strip() != '']
@@ -66,18 +75,19 @@ def main():
             text_context = random.choice(text_contexts)
             record = create_text_context_record(challenging_text, text_context, dummy_audio_filepath, 'challenging', dummy_target_audio_codes_path)
             all_records.append(record)
-    
-    for regular_text in regular_texts_for_audiocontext:
-        for _ in range(args.n_audio_contexts_per_regular_text):
-            audio_context = random.choice(audio_contexts)
-            record = create_audio_context_record(regular_text, audio_context, 'regular')
-            all_records.append(record)
-    
-    for regular_text in regular_texts_for_textcontext:
-        for _ in range(args.n_text_contexts_per_regular_text):
-            text_context = random.choice(text_contexts)
-            record = create_text_context_record(regular_text, text_context, dummy_audio_filepath, 'regular', dummy_target_audio_codes_path)
-            all_records.append(record)
+
+    if regular_texts_for_audiocontext is not None:  
+        for regular_text in regular_texts_for_audiocontext:
+            for _ in range(args.n_audio_contexts_per_regular_text):
+                audio_context = random.choice(audio_contexts)
+                record = create_audio_context_record(regular_text, audio_context, 'regular')
+                all_records.append(record)
+    if regular_texts_for_textcontext is not None:
+        for regular_text in regular_texts_for_textcontext:
+            for _ in range(args.n_text_contexts_per_regular_text):
+                text_context = random.choice(text_contexts)
+                record = create_text_context_record(regular_text, text_context, dummy_audio_filepath, 'regular', dummy_target_audio_codes_path)
+                all_records.append(record)
     
     random.shuffle(all_records)
     repeated_records = []

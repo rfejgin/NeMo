@@ -14,6 +14,7 @@ import scipy.stats as stats
 import copy
 import shutil
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from PIL import Image
 
 def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
     metrics = {}
@@ -27,7 +28,7 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
 
-def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1):
+def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, apply_attention_prior=False):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
 
@@ -122,10 +123,23 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                 
                 import time
                 st = time.time()
-                predicted_audio, predicted_audio_lens, _, _ = model.infer_batch(batch_cuda, max_decoder_steps=440, temperature=temperature, topk=topk, use_cfg=use_cfg, cfg_scale=cfg_scale)
+                predicted_audio, predicted_audio_lens, _, _, cross_attention_maps  = model.infer_batch(
+                    batch_cuda, 
+                    max_decoder_steps=440, 
+                    temperature=temperature, 
+                    topk=topk, 
+                    use_cfg=use_cfg, 
+                    cfg_scale=cfg_scale, 
+                    return_cross_attn_probs=True, 
+                    apply_attention_prior=apply_attention_prior
+                )
+                
                 et = time.time()
                 print(f"Time taken for inference: {et-st}", predicted_audio.size())
                 for idx in range(predicted_audio.size(0)):
+                    cross_attn_map_image = Image.fromarray(cross_attention_maps[idx])
+                    cross_attn_map_image.save(os.path.join(audio_dir, f"cross_attn_map_{item_idx}.png"))
+
                     predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
                     predicted_audio_np = predicted_audio_np[:predicted_audio_lens[idx]]
                     audio_path = os.path.join(audio_dir, f"predicted_audio_{item_idx}.wav")
@@ -194,6 +208,7 @@ def main():
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--use_cfg', action='store_true')
     parser.add_argument('--cfg_scale', type=float, default=1.0)
+    parser.add_argument('--apply_attention_prior', type=int, default=0) # set to 1 to apply attention prior
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_repeats', type=int, default=1)
@@ -217,7 +232,8 @@ def main():
                 args.use_cfg,
                 args.cfg_scale,
                 args.batch_size,
-                args.num_repeats
+                args.num_repeats,
+                args.apply_attention_prior==1
             )
         return
     else:
@@ -268,7 +284,9 @@ def main():
                 args.codecmodel_path, 
                 args.use_cfg,
                 args.cfg_scale,
-                args.batch_size
+                args.batch_size,
+                args.num_repeats,
+                args.apply_attention_prior==1
             )
             
 

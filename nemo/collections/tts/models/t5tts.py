@@ -721,7 +721,20 @@ class T5TTS_Model(ModelPT):
 
         return val_output
     
-    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0):
+    def get_cross_attention_scores(self, attn_probs):
+        """
+        Returns the cross attention probabilities for the last audio timestep
+        """
+        mean_cross_attn_scores = []
+        for layerwise_attn_prob in attn_probs:
+            cross_attn_prob = layerwise_attn_prob['cross_attn_probabilities'][0] # B, H, audio_timesteps, text_timesteps
+            mean_cross_attn_scores.append(cross_attn_prob.mean(dim=1)) # B, audio_timesteps, text_timesteps
+        mean_cross_attn_scores = torch.stack(mean_cross_attn_scores, dim=1) # B, L, audio_timesteps, text_timesteps
+        mean_cross_attn_scores = mean_cross_attn_scores.mean(dim=1) # B, audio_timesteps, text_timesteps
+        last_audio_timestep_scores = mean_cross_attn_scores[:, -1, :] # B, text_timesteps
+        return last_audio_timestep_scores
+    
+    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0, return_cross_attn_probs=False, apply_attention_prior=False):
         with torch.no_grad():
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
             
@@ -743,6 +756,10 @@ class T5TTS_Model(ModelPT):
                     context_tensors['addtional_decoder_mask']
                 )
             
+            cross_attention_scores_all_timesteps = []
+            _attn_prior = None
+            unfinished_texts = {}
+            finished_texts = {}
             for idx in range(max_decoder_steps):
                 if idx % 20 == 0:
                     print(f"Decoding timestep {idx}")
@@ -769,12 +786,12 @@ class T5TTS_Model(ModelPT):
                         cfg_audio_codes_embedded[batch_size:, :dummy_additional_decoder_input.size(1)] = dummy_additional_decoder_input
                         cfg_audio_codes_mask[batch_size:, :dummy_additional_decoder_input.size(1)] = dummy_addition_dec_mask
 
-                    combined_logits, _ = self.forward(
+                    combined_logits, attn_probs = self.forward(
                         dec_input_embedded=cfg_audio_codes_embedded,
                         dec_input_mask=cfg_audio_codes_mask,
                         cond=cfg_cond,
                         cond_mask=cfg_cond_mask,
-                        attn_prior=None,
+                        attn_prior=_attn_prior,
                         multi_encoder_mapping=context_tensors['multi_encoder_mapping']
                     )
                     
@@ -782,18 +799,29 @@ class T5TTS_Model(ModelPT):
                     uncond_logits = combined_logits[batch_size:]
                     all_code_logits = (1 - cfg_scale) * uncond_logits + cfg_scale * cond_logits
                 else:
-                    all_code_logits, _ = self.forward(
+                    all_code_logits, attn_probs = self.forward(
                         dec_input_embedded=_audio_codes_embedded,
                         dec_input_mask=_audio_codes_mask,
                         cond=context_tensors['cond'],
                         cond_mask=context_tensors['cond_mask'],
-                        attn_prior=None,
+                        attn_prior=_attn_prior,
                         multi_encoder_mapping=context_tensors['multi_encoder_mapping']
                     )
+                
+                if return_cross_attn_probs or apply_attention_prior:
+                    cross_attention_scores = self.get_cross_attention_scores(attn_probs, context_tensors['text_lens']) # B, text_timesteps
+                    text_time_step_attended = []
+                    for bidx in range(batch_size):
+                        item_attention_scores = cross_attention_scores[bidx,2:context_tensors['text_lens'][bidx]-3] # Ignore first 2 and last 3 timesteps
+                        attended_timestep = item_attention_scores.argmax().item() + 2
+                        text_time_step_attended.append(attended_timestep)
+                    cross_attention_scores_all_timesteps.append(cross_attention_scores)
+
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)
                 audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk) # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01) # (B, num_codebooks)
                 
+
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
                         pred_token = all_codes_next_argmax[item_idx][0].item()

@@ -453,6 +453,21 @@ class T5TTS_Model(ModelPT):
                 new_prior = prior + (residual * (global_step - prior_scaledown_start_step) / (prior_end_step - prior_scaledown_start_step))
                 return new_prior
 
+    # def compute_hard_alignment(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
+    #     # attention scores: List of (B, C, audio_timesteps, text_timesteps)
+    #     attention_scores_combined = torch.cat(attention_scores, dim=1)
+    #     attention_scores_mean = attention_scores_combined.mean(dim=1, keepdim=True) # (B, 1, audio_timesteps, text_timesteps)
+    #     attention_scores_mean = attention_scores_mean[:, :, dec_context_size:, :] # Remove the context audio embeddings from the attention scores
+    #     cross_attention_matrix = torch.zeros_like(attention_scores_mean) # (B, 1, audio_timesteps, text_timesteps)
+    #     for bidx in range(attention_scores_mean.size(0)):
+    #         attention_scores_mean[bidx,:,:,0] = -999 # Ignore the first timestep
+    #         attention_scores_mean[bidx,:,:,text_lens[bidx]-3:] = -999 # Ignore the last 3 timesteps
+    #         text_timesteps_attended = torch.argmax(attention_scores_mean[bidx], dim=-1)[0]
+    #         import ipdb; ipdb.set_trace()
+    #         audio_timesteps = torch.arange(0, audio_lens[bidx], device=attention_scores_mean.device)
+    #         cross_attention_matrix[bidx, 0, audio_timesteps, text_timesteps_attended] = 1.0
+    #     return cross_attention_matrix
+
     def compute_alignment_loss(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
         # attention scores: List of (B, C, audio_timesteps, text_timesteps)
         attention_scores_combined = torch.cat(attention_scores, dim=1) # (B, C, audio_timesteps, text_timesteps)
@@ -682,7 +697,8 @@ class T5TTS_Model(ModelPT):
             'text_lens': context_tensors['text_lens'],
             'context_audio_codes': context_tensors['context_audio_codes'],
             'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
-            'dec_context_size' : dec_context_size
+            'dec_context_size' : dec_context_size,
+            'hard_cross_attention': self.compute_hard_alignment(cross_attention_scores, context_tensors['text_lens'], audio_codes_lens_target, dec_context_size),
         }
     
     def training_step(self, batch, batch_idx):
@@ -772,6 +788,7 @@ class T5TTS_Model(ModelPT):
             _attn_prior = None
             unfinished_texts = {}
             finished_texts_counter = {}
+            attended_timestep_counter = [{} for _ in range(text.size(0))]
             for idx in range(max_decoder_steps):
                 if idx % 20 == 0:
                     print(f"Decoding timestep {idx}")
@@ -811,6 +828,7 @@ class T5TTS_Model(ModelPT):
                     uncond_logits = combined_logits[batch_size:]
                     all_code_logits = (1 - cfg_scale) * uncond_logits + cfg_scale * cond_logits
                 else:
+                    batch_size = audio_codes_embedded.size(0)
                     all_code_logits, attn_probs = self.forward(
                         dec_input_embedded=_audio_codes_embedded,
                         dec_input_mask=_audio_codes_mask,
@@ -825,29 +843,42 @@ class T5TTS_Model(ModelPT):
                     text_time_step_attended = []
                     for bidx in range(batch_size):
                         if context_tensors['text_lens'][bidx] <= 5:
-                            # very short text - consider us to always be near the end of the utterance
-                            attended_timestep = context_tensors['text_lens'][bidx] - 1
+                            # Very short sentences, does not really matter. We wont apply prior for them.
+                            attended_timestep = int(context_tensors['text_lens'][bidx] / 2)
                         else:
                             item_attention_scores = cross_attention_scores[bidx,2:context_tensors['text_lens'][bidx]-3] # Ignore first 2 and last 3 timesteps
+                            if idx <= 10:
+                                # pneekhara: Yet another hack to avoid the model attending to a timestep way into the future timestep in the beginning
+                                item_attention_scores = item_attention_scores[:int((idx+1)*1.5)]
                             attended_timestep = item_attention_scores.argmax().item() + 2
                         text_time_step_attended.append(attended_timestep)
+                        attended_timestep_counter[bidx][attended_timestep] = attended_timestep_counter[bidx].get(attended_timestep, 0) + 1
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
                 
-                if apply_attention_prior and idx > 8:
-                    eps = 1e-3
+                if apply_attention_prior and idx >= 10:
+                    eps = 1e-5
                     # Attn prior for the next timestep
                     _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + eps
                     _attn_prior = _attn_prior.to(cross_attention_scores.device)
                     for bidx in range(cross_attention_scores.shape[0]):
                         if bidx < batch_size:
+                            _text_len = context_tensors['text_lens'][bidx]
                             if context_tensors['text_lens'][bidx] <= 5:
-                                # no prior for very short texts
+                                # Very short sentences, No Prior
                                 _attn_prior[bidx, 0, :] = 1.0
                             else:
-                                _attn_prior[bidx, 0, text_time_step_attended[bidx]+1] = 1.0
-                                _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 1.0
-                                _attn_prior[bidx, 0, text_time_step_attended[bidx]+2] = 1.0
-                                unfinished_texts[bidx] = False
+                                _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
+                                _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 0.8 # Slightly bias to continue moving forward. Not very important.
+                                _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1, _text_len - 1) ] = 1.0
+                                _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+2, _text_len - 1) ] = 1.0
+                            
+                            # Penalize timesteps that have been attended to more than 10 times
+                            for _timestep in attended_timestep_counter[bidx]:
+                                if attended_timestep_counter[bidx][_timestep] >= 10:
+                                    # This means the timestep has been attended to more than 10 times (To avoid getting stuck)
+                                    _attn_prior[bidx, 0, _timestep] = eps
+
+                            unfinished_texts[bidx] = False
                             if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 10:
                                 # This means the sentence has definitely not ended
                                 if bidx not in finished_texts_counter and bidx not in end_indices:
@@ -857,12 +888,11 @@ class T5TTS_Model(ModelPT):
                                 unfinished_texts[bidx] = False
                                 if bidx not in finished_texts_counter:
                                     finished_texts_counter[bidx] = 0
-                                
                             
                 for key in finished_texts_counter:
                     finished_texts_counter[key] += 1
                 
-                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 10}
+                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 10} # Items that have been close to the end for atleast 10 timesteps
                 unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)
@@ -895,8 +925,12 @@ class T5TTS_Model(ModelPT):
             torch.cuda.empty_cache()
             if return_cross_attn_probs:
                 cross_attention_scores_all_timesteps = torch.stack(cross_attention_scores_all_timesteps, dim=2) # B, text_timesteps, T'
-                cross_attn_np = plot_alignment_to_numpy(cross_attention_scores_all_timesteps[0].cpu().numpy())
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attn_np
+                cross_attention_maps = []
+                for bidx in range(predicted_audio.size(0)):
+                    item_cross_attention_scores = cross_attention_scores_all_timesteps[bidx,:context_tensors['text_lens'][bidx],:predicted_codes_lens[bidx]]
+                    cross_attn_np = plot_alignment_to_numpy(item_cross_attention_scores.cpu().numpy())
+                    cross_attention_maps.append(cross_attn_np)
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attention_maps
             else:
                 # For backward compatibility
                 return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens

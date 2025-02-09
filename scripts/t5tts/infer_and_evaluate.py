@@ -44,146 +44,6 @@ CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cf
 """
 
 
-# dataset_meta_info = {
-#     'vctk': {
-#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
-#         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
-#         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
-#     },
-#     'riva_challenging': {
-#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
-#         'audio_dir' : '/datap/misc/Datasets/riva',
-#         'feature_dir' : '/datap/misc/Datasets/riva',
-#     },
-#     'riva_challenging_nozeros': {
-#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
-#         'audio_dir' : '/datap/misc/Datasets/riva',
-#         'feature_dir' : '/datap/misc/Datasets/riva',
-#     },
-#     'libri_val': {
-#         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
-#         'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-#         'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-#     }
-# }
-
-dataset_meta_info = {
-    'vctk': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
-        'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
-        'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
-    },
-    'zs_subjective': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/zs_subjective_libridevclean_speakers_20.json',
-        'audio_dir': '/datap/misc/Datasets/LibriTTS/dev-clean-for-zs',
-        'feature_dir':'/'
-    },
-    'riva_val_audio_context': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/RivattsEnglishLindyRodney21fps_val_nemo_codec21_bw_6.0_phoneme_tts.json',
-        'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
-        'feature_dir' : '/',
-    },
-    'riva_val_text_context': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/RivattsEnglishLindyRodney21fps_val_nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_phoneme_tts_TextContext.json',
-        'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
-        'feature_dir' : '/',
-    },
-    'libri_dev_clean_eval_large': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset_large.json',
-        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
-        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
-    },
-    'libri_dev_clean_eval_small': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset.json',
-        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
-        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
-    },
-    'riva_challenging': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
-        'audio_dir' : '/datap/misc/Datasets/riva',
-        'feature_dir' : '/datap/misc/Datasets/riva',
-    },
-    'libri_dev_clean_eval_small': {
-        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset.json',
-        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
-        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
-    },
-    'libri_val': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri360_val.json',
-        'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-        'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-    },
-    'libri_unseen_test': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/test_clean_withContextAudioPaths.json',
-        'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-        'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-    },
-    'libri_seen_test_v2': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/libri_seen_evalset_from_testclean_v2.json',
-        'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-        'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-    },
-    'libri_unseen_val': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/dev_clean_withContextAudioPaths_evalset.json',
-        'audio_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-        'feature_dir' : '/datap/misc/LibriTTSfromNemo/LibriTTS',
-    },
-    'spanish_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_spanish_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_spanish_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_spanish_v0.1',
-        'tokenizer_names': ['spanish_phoneme'],
-        'whisper_language': 'es'
-    },
-    'german_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_german_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_german_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_german_v0.1',
-        'tokenizer_names': ['german_chartokenizer'],
-        'whisper_language': 'de',
-        'load_cached_codes_if_available': False
-    },
-    'french_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_french_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_french_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_french_v0.1',
-        'tokenizer_names': ['french_chartokenizer'],
-        'whisper_language': 'fr',
-        'load_cached_codes_if_available': False
-    },
-    'italian_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_italian_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_italian_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_italian_v0.1',
-        'tokenizer_names': ['italian_chartokenizer'],
-        'whisper_language': 'it',
-        'load_cached_codes_if_available': False
-    },
-    'portuguese_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_portuguese_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_portuguese_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_portuguese_v0.1',
-        'tokenizer_names': ['portuguese_chartokenizer'],
-        'whisper_language': 'pt',
-        'load_cached_codes_if_available': False
-    },
-    'polish_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_polish_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_polish_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_polish_v0.1',
-        'tokenizer_names': ['polish_chartokenizer'],
-        'whisper_language': 'pl',
-        'load_cached_codes_if_available': False
-    },
-    'dutch_cml': {
-        'manifest_path' : '/Data/CML/manifests_with_codecs/cml_tts_dataset_dutch_v0.1/dev_subset_withAudioCodes_codec21Khz_no_eliz_filtered.json',
-        'audio_dir': '/Data/CML/cml_tts_dataset_dutch_v0.1',
-        'feature_dir': '/Data/CML/cml_tts_dataset_dutch_v0.1',
-        'tokenizer_names': ['dutch_chartokenizer'],
-        'whisper_language': 'nl',
-        'load_cached_codes_if_available': False
-    }
-}
 
 def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audio_dir: str, sample_rate: int, item_index: int):
     for idx in range(t.size(0)):
@@ -194,6 +54,7 @@ def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audi
         item_index += 1
     return item_index
         
+from PIL import Image
 
 def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
     metrics = {}
@@ -206,7 +67,7 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
 
-def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, debug=False):
+def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, apply_attention_prior=False):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
 
@@ -291,9 +152,6 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
 
             item_idx = 0
             for bidx, batch in enumerate(test_data_loader):
-                if debug and item_idx > 0:
-                    print("WARNING: exiting after one batch because debug=True")
-                    break
                 print("Processing batch {} out of {} of dataset {}".format(bidx, len(test_data_loader), dataset))
                 batch_cuda ={}
                 for key in batch:
@@ -304,23 +162,44 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                 
                 import time
                 st = time.time()
-                predicted_audio, predicted_audio_lens, _, _ = model.infer_batch(batch_cuda, max_decoder_steps=440, temperature=temperature, topk=topk, use_cfg=use_cfg, cfg_scale=cfg_scale)
+                predicted_audio, predicted_audio_lens, _, _, cross_attention_maps  = model.infer_batch(
+                    batch_cuda, 
+                    max_decoder_steps=440, 
+                    temperature=temperature, 
+                    topk=topk, 
+                    use_cfg=use_cfg, 
+                    cfg_scale=cfg_scale, 
+                    return_cross_attn_probs=True, 
+                    apply_attention_prior=apply_attention_prior
+                )
+                
                 et = time.time()
                 print(f"Time taken for inference: {et-st}", predicted_audio.size())
-                write_audio_tensor(t=predicted_audio, lengths=predicted_audio_lens, prefix="predicted_audio", 
-                                audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
-                if 'context_audio' in batch:
-                    write_audio_tensor(t=batch['context_audio'], lengths=batch['context_audio_lens'], prefix="context_audio", 
-                                    audio_dir=audio_dir, sample_rate=model.cfg.sample_rate, item_index=item_idx)
-                
-                item_idx += predicted_audio.size(0)
+                for idx in range(predicted_audio.size(0)):
+                    cross_attn_map_image = Image.fromarray(cross_attention_maps[idx])
+                    cross_attn_map_image.save(os.path.join(audio_dir, f"cross_attn_map_{item_idx}.png"))
+
+                    predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
+                    predicted_audio_np = predicted_audio_np[:predicted_audio_lens[idx]]
+                    audio_path = os.path.join(audio_dir, f"predicted_audio_{item_idx}.wav")
+                    sf.write(audio_path, predicted_audio_np, model.cfg.sample_rate)
+                    context_audio_path = manifest_records[item_idx].get('context_audio_filepath', None)
+                    target_audio_path = manifest_records[item_idx].get('audio_filepath', None)
+                    if context_audio_path is not None:
+                        context_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], context_audio_path)
+                    if target_audio_path is not None:
+                        target_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], target_audio_path)
+                    if os.path.exists(context_audio_path):
+                        shutil.copy(context_audio_path, os.path.join(audio_dir, f"context_audio_{item_idx}.wav"))
+                    if os.path.exists(target_audio_path):
+                        shutil.copy(target_audio_path, os.path.join(audio_dir, f"target_audio_{item_idx}.wav"))
+                    item_idx += 1
             
             metrics, filewise_metrics = evaluate_generated_audio.evaluate(
                 dataset_meta[dataset]['manifest_path'],
                 dataset_meta[dataset]['audio_dir'],
                 audio_dir,
                 language=language,
-                debug=debug
             )
             metrics_n_repeated.append(metrics)
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
@@ -345,7 +224,7 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
         all_experiment_csv_with_ci = os.path.join(out_dir, "all_experiment_metrics_with_ci.csv")
         if not os.path.exists(all_experiment_csv_with_ci):
             with open(all_experiment_csv_with_ci, "w") as f:
-                f.write("checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative\n")
+                f.write("ch t_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative\n")
         with open(all_experiment_csv_with_ci, "a") as f:
             f.write(f"{checkpoint_name},{dataset},{metrics_mean_ci['cer_filewise_avg']},{metrics_mean_ci['wer_filewise_avg']},{metrics_mean_ci['cer_cumulative']},{metrics_mean_ci['wer_cumulative']},{metrics_mean_ci['ssim_pred_gt_avg']},{metrics_mean_ci['ssim_pred_context_avg']},{metrics_mean_ci['ssim_gt_context_avg']},{metrics_mean_ci['ssim_pred_gt_avg_alternate']},{metrics_mean_ci['ssim_pred_context_avg_alternate']},{metrics_mean_ci['ssim_gt_context_avg_alternate']},{metrics_mean_ci['cer_gt_audio_cumulative']},{metrics_mean_ci['wer_gt_audio_cumulative']}\n")
             print(f"Wrote metrics with CI for {checkpoint_name} and {dataset} to {all_experiment_csv_with_ci}")
@@ -387,28 +266,34 @@ def main():
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--use_cfg', action='store_true')
     parser.add_argument('--cfg_scale', type=float, default=1.0)
+    parser.add_argument('--apply_attention_prior', type=int, default=0) # set to 1 to apply attention prior
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_repeats', type=int, default=1)
-    parser.add_argument('--debug', action='store_true', help="Run a subset of dataset for debugging purporses")
 
     args = parser.parse_args()
 
-    if (args.hparams_file is not None) and (args.checkpoint_file is not None) and (args.hparams_file != "null"):
-        run_inference(
-            args.hparams_file, 
-            args.checkpoint_file, 
-            args.datasets.split(","), 
-            args.out_dir, 
-            args.temperature, 
-            args.topk,
-            args.codecmodel_path,
-            args.use_cfg,
-            args.cfg_scale,
-            args.batch_size,
-            num_repeats=args.num_repeats,
-            debug=args.debug
-        )
+    if (args.hparams_files is not None) and (args.checkpoint_files is not None) and (args.hparams_files != "null"):
+        hparam_files = args.hparams_files.split(",")
+        checkpoint_files = args.checkpoint_files.split(",")
+        print("Running inference for hparams files: ", hparam_files)
+        print("Running inference for checkpoint files: ", checkpoint_files)
+        assert len(hparam_files) == len(checkpoint_files), "Number of hparams files and checkpoint files should be the same."
+        for hparams_file, checkpoint_file in zip(hparam_files, checkpoint_files):
+            run_inference(
+                hparams_file, 
+                checkpoint_file,
+                args.datasets.split(","),
+                args.out_dir,
+                args.temperature,
+                args.topk,
+                args.codecmodel_path,
+                args.use_cfg,
+                args.cfg_scale,
+                args.batch_size,
+                args.num_repeats,
+                args.apply_attention_prior==1
+            )
         return
     else:
         BASE_EXP_DIR = args.base_exp_dir
@@ -468,8 +353,8 @@ def main():
                     args.use_cfg,
                     args.cfg_scale,
                     args.batch_size,
-                    num_repeats=args.num_repeats,
-                    debug=args.debug
+                    args.num_repeats,
+                    args.apply_attention_prior==1
                 )
             except Exception as e:
                  print("\n*** ***\n")

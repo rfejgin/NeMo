@@ -60,7 +60,8 @@ dataset_meta_info = {
         'feature_dir' : '/Data/RivaData/riva',
     },
     'riva_challenging_nozeros': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
+        # 'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_nozeros.json',
+        'manifest_path': '/home/pneekhara/2023/SimpleT5NeMo/manifests/riva_challenging_filtered.json',
         'audio_dir' : '/datap/misc/Datasets/riva',
         'feature_dir' : '/datap/misc/Datasets/riva',
     },

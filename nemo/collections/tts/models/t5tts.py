@@ -847,7 +847,7 @@ class T5TTS_Model(ModelPT):
                             attended_timestep = int(context_tensors['text_lens'][bidx] / 2)
                         else:
                             item_attention_scores = cross_attention_scores[bidx,2:context_tensors['text_lens'][bidx]-3] # Ignore first 2 and last 3 timesteps
-                            if idx < 10:
+                            if idx <= 10:
                                 # pneekhara: Yet another hack to avoid the model attending to a timestep way into the future timestep in the beginning
                                 item_attention_scores = item_attention_scores[:int((idx+1)*1.5)]
                             attended_timestep = item_attention_scores.argmax().item() + 2
@@ -855,7 +855,7 @@ class T5TTS_Model(ModelPT):
                         attended_timestep_counter[bidx][attended_timestep] = attended_timestep_counter[bidx].get(attended_timestep, 0) + 1
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
                 
-                if apply_attention_prior and idx >= 5:
+                if apply_attention_prior and idx >= 10:
                     eps = 1e-5
                     # Attn prior for the next timestep
                     _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + eps

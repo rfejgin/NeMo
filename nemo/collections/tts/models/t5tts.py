@@ -762,7 +762,7 @@ class T5TTS_Model(ModelPT):
         last_audio_timestep_scores = mean_cross_attn_scores[:, -1, :] # B, text_timesteps
         return last_audio_timestep_scores
     
-    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0, return_cross_attn_probs=False, apply_attention_prior=False, prior_epsilon=1e-5):
+    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0, return_cross_attn_probs=False, apply_attention_prior=False, prior_epsilon=1e-5, lookahead_window_size=10):
         with torch.no_grad():
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
             
@@ -847,7 +847,7 @@ class T5TTS_Model(ModelPT):
                         if attended_timestep_counter[bidx].get(last_attended_timestep, 0) >= 8:
                             # This is probably an attention sink! Move to the next timestep
                             last_attended_timestep += 1
-                        window_size = 10
+                        window_size = lookahead_window_size
                         window_end = min(last_attended_timestep + window_size, context_tensors['text_lens'][bidx] - 3) # Ignore the last 3 timesteps
                         item_attention_scores = cross_attention_scores[bidx,last_attended_timestep:window_end]
                         if item_attention_scores.size(0) == 0:
@@ -860,8 +860,8 @@ class T5TTS_Model(ModelPT):
 
                     last_attended_timesteps.append(text_time_step_attended)
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
-                    if idx % 20 == 0:
-                        print("At timesteps", text_time_step_attended, context_tensors['text_lens'])
+                    # if idx % 20 == 0:
+                    #     print("At timesteps", text_time_step_attended, context_tensors['text_lens'])
                 
                 if apply_attention_prior and idx >= 10:
                     eps = prior_epsilon
@@ -900,7 +900,7 @@ class T5TTS_Model(ModelPT):
                 for key in finished_texts_counter:
                     finished_texts_counter[key] += 1
                 
-                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 10} # Items that have been close to the end for atleast 10 timesteps
+                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 20} # Items that have been close to the end for atleast 10 timesteps
                 unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)

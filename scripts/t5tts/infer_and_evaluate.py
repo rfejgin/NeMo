@@ -67,7 +67,22 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
 
-def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature, topk, codecmodel_path, use_cfg, cfg_scale, batch_size, num_repeats=1, apply_attention_prior=False):
+def run_inference(
+        hparams_file, 
+        checkpoint_file, 
+        datasets, 
+        out_dir, 
+        temperature, 
+        topk, 
+        codecmodel_path, 
+        use_cfg, 
+        cfg_scale, 
+        batch_size, 
+        num_repeats=1, 
+        apply_attention_prior=False,
+        attention_prior_epsilon=1e-3,
+        attention_prior_lookahead_window=10    
+    ):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
 
@@ -95,7 +110,7 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
     # import ipdb; ipdb.set_trace()
 
     checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
-    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale)
+    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale, apply_attention_prior, attention_prior_epsilon, attention_prior_lookahead_window)
     dataset_meta_info = evalset_config.dataset_meta_info
     for dataset in datasets:
         metrics_n_repeated = []
@@ -170,7 +185,9 @@ def run_inference(hparams_file, checkpoint_file, datasets, out_dir, temperature,
                     use_cfg=use_cfg, 
                     cfg_scale=cfg_scale, 
                     return_cross_attn_probs=True, 
-                    apply_attention_prior=apply_attention_prior
+                    apply_attention_prior=apply_attention_prior,
+                    prior_epsilon=attention_prior_epsilon,
+                    lookahead_window_size=attention_prior_lookahead_window
                 )
                 
                 et = time.time()
@@ -266,7 +283,9 @@ def main():
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--use_cfg', action='store_true')
     parser.add_argument('--cfg_scale', type=float, default=1.0)
-    parser.add_argument('--apply_attention_prior', type=int, default=0) # set to 1 to apply attention prior
+    parser.add_argument('--apply_attention_prior', action='store_true')
+    parser.add_argument('--attention_prior_epsilon', type=float, default=1e-3)
+    parser.add_argument('--attention_prior_lookahead_window', type=int, default=10)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_repeats', type=int, default=1)
@@ -281,18 +300,20 @@ def main():
         assert len(hparam_files) == len(checkpoint_files), "Number of hparams files and checkpoint files should be the same."
         for hparams_file, checkpoint_file in zip(hparam_files, checkpoint_files):
             run_inference(
-                hparams_file, 
-                checkpoint_file,
-                args.datasets.split(","),
-                args.out_dir,
-                args.temperature,
-                args.topk,
-                args.codecmodel_path,
-                args.use_cfg,
-                args.cfg_scale,
-                args.batch_size,
-                args.num_repeats,
-                args.apply_attention_prior==1
+                hparams_file=hparams_file, 
+                checkpoint_file=checkpoint_file,
+                datasets=args.datasets.split(","),
+                out_dir=args.out_dir,
+                temperature=args.temperature,
+                topk=args.topk,
+                codecmodel_path=args.codecmodel_path,
+                use_cfg=args.use_cfg,
+                cfg_scale=args.cfg_scale,
+                batch_size=args.batch_size,
+                num_repeats=args.num_repeats,
+                apply_attention_prior=args.apply_attention_prior,
+                attention_prior_epsilon=args.attention_prior_epsilon,
+                attention_prior_lookahead_window=args.attention_prior_lookahead_window
             )
         return
     else:
@@ -341,28 +362,23 @@ def main():
             # import ipdb; ipdb.set_trace()
             print("Hparams file path: ", hparams_copy_path)
             print("Checkpoint file path: ", checkpoint_copy_path)
-            try:
-                run_inference(
-                    hparams_copy_path, 
-                    checkpoint_copy_path, 
-                    args.datasets.split(","), 
-                    args.out_dir, 
-                    args.temperature, 
-                    args.topk, 
-                    args.codecmodel_path, 
-                    args.use_cfg,
-                    args.cfg_scale,
-                    args.batch_size,
-                    args.num_repeats,
-                    args.apply_attention_prior==1
-                )
-            except Exception as e:
-                 print("\n*** ***\n")
-                 print(f"Exception: {e}")
-                 print(f"Error during inferencing of {checkpoint_copy_path}")
-                 print(e)
-                 print("\Continuing to next checkpoint...")
-                 print("\n*** ***\n") 
+            run_inference(
+                hparams_copy_path, 
+                checkpoint_copy_path, 
+                datasets=args.datasets.split(","),
+                out_dir=args.out_dir,
+                temperature=args.temperature,
+                topk=args.topk,
+                codecmodel_path=args.codecmodel_path,
+                use_cfg=args.use_cfg,
+                cfg_scale=args.cfg_scale,
+                batch_size=args.batch_size,
+                num_repeats=args.num_repeats,
+                apply_attention_prior=args.apply_attention_prior,
+                attention_prior_epsilon=args.attention_prior_epsilon,
+                attention_prior_lookahead_window=args.attention_prior_lookahead_window
+            )
+            
 
 if __name__ == '__main__':
     main()

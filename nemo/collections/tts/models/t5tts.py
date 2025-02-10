@@ -762,7 +762,7 @@ class T5TTS_Model(ModelPT):
         last_audio_timestep_scores = mean_cross_attn_scores[:, -1, :] # B, text_timesteps
         return last_audio_timestep_scores
     
-    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0, return_cross_attn_probs=False, apply_attention_prior=False):
+    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0, return_cross_attn_probs=False, apply_attention_prior=False, prior_epsilon=1e-5, lookahead_window_size=10):
         with torch.no_grad():
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
             
@@ -789,6 +789,7 @@ class T5TTS_Model(ModelPT):
             unfinished_texts = {}
             finished_texts_counter = {}
             attended_timestep_counter = [{} for _ in range(text.size(0))]
+            last_attended_timesteps = [[1 for _ in range(text.size(0))]] # Maintain a list of attended timesteps as we predict audio for each batch item
             for idx in range(max_decoder_steps):
                 if idx % 20 == 0:
                     print(f"Decoding timestep {idx}")
@@ -842,21 +843,28 @@ class T5TTS_Model(ModelPT):
                     cross_attention_scores = self.get_cross_attention_scores(attn_probs) # B, text_timesteps
                     text_time_step_attended = []
                     for bidx in range(batch_size):
-                        if context_tensors['text_lens'][bidx] <= 5:
-                            # Very short sentences, does not really matter. We wont apply prior for them.
-                            attended_timestep = int(context_tensors['text_lens'][bidx] / 2)
+                        last_attended_timestep = last_attended_timesteps[-1][bidx]
+                        if attended_timestep_counter[bidx].get(last_attended_timestep, 0) >= 8:
+                            # This is probably an attention sink! Move to the next timestep
+                            last_attended_timestep += 1
+                        window_size = lookahead_window_size
+                        window_end = min(last_attended_timestep + window_size, context_tensors['text_lens'][bidx] - 3) # Ignore the last 3 timesteps
+                        item_attention_scores = cross_attention_scores[bidx,last_attended_timestep:window_end]
+                        if item_attention_scores.size(0) == 0:
+                            # This means the sentence has ended
+                            attended_timestep = context_tensors['text_lens'][bidx] - 1
                         else:
-                            item_attention_scores = cross_attention_scores[bidx,2:context_tensors['text_lens'][bidx]-3] # Ignore first 2 and last 3 timesteps
-                            if idx <= 10:
-                                # pneekhara: Yet another hack to avoid the model attending to a timestep way into the future timestep in the beginning
-                                item_attention_scores = item_attention_scores[:int((idx+1)*1.5)]
-                            attended_timestep = item_attention_scores.argmax().item() + 2
+                            attended_timestep = item_attention_scores.argmax().item() + last_attended_timestep
                         text_time_step_attended.append(attended_timestep)
                         attended_timestep_counter[bidx][attended_timestep] = attended_timestep_counter[bidx].get(attended_timestep, 0) + 1
+
+                    last_attended_timesteps.append(text_time_step_attended)
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
+                    # if idx % 20 == 0:
+                    #     print("At timesteps", text_time_step_attended, context_tensors['text_lens'])
                 
                 if apply_attention_prior and idx >= 10:
-                    eps = 1e-5
+                    eps = prior_epsilon
                     # Attn prior for the next timestep
                     _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + eps
                     _attn_prior = _attn_prior.to(cross_attention_scores.device)
@@ -870,7 +878,7 @@ class T5TTS_Model(ModelPT):
                                 _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 0.8 # Slightly bias to continue moving forward. Not very important.
                                 _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1, _text_len - 1) ] = 1.0
-                                _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+2, _text_len - 1) ] = 1.0
+                                _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+2, _text_len - 1) ] = 0.8
                             
                             # Penalize timesteps that have been attended to more than 10 times
                             for _timestep in attended_timestep_counter[bidx]:
@@ -892,7 +900,7 @@ class T5TTS_Model(ModelPT):
                 for key in finished_texts_counter:
                     finished_texts_counter[key] += 1
                 
-                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 10} # Items that have been close to the end for atleast 10 timesteps
+                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 20} # Items that have been close to the end for atleast 10 timesteps
                 unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)

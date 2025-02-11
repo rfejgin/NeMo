@@ -735,6 +735,9 @@ class T5TTS_Model(ModelPT):
                 ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
                 cross_attention_probs = [attn['cross_attn_probabilities'][0] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
                 self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix="val_", dec_context_size=dec_context_size)
+                for layer_idx in self.transcript_decoder_layers:
+                    cross_attention_probs = [ attn_info[layer_idx]['cross_attn_probabilities'][0] ]
+                    self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix=f"val_layer_{layer_idx}_", dec_context_size=dec_context_size)
 
         val_output = {
             'val_loss': loss,

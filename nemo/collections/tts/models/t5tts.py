@@ -453,21 +453,6 @@ class T5TTS_Model(ModelPT):
                 new_prior = prior + (residual * (global_step - prior_scaledown_start_step) / (prior_end_step - prior_scaledown_start_step))
                 return new_prior
 
-    # def compute_hard_alignment(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
-    #     # attention scores: List of (B, C, audio_timesteps, text_timesteps)
-    #     attention_scores_combined = torch.cat(attention_scores, dim=1)
-    #     attention_scores_mean = attention_scores_combined.mean(dim=1, keepdim=True) # (B, 1, audio_timesteps, text_timesteps)
-    #     attention_scores_mean = attention_scores_mean[:, :, dec_context_size:, :] # Remove the context audio embeddings from the attention scores
-    #     cross_attention_matrix = torch.zeros_like(attention_scores_mean) # (B, 1, audio_timesteps, text_timesteps)
-    #     for bidx in range(attention_scores_mean.size(0)):
-    #         attention_scores_mean[bidx,:,:,0] = -999 # Ignore the first timestep
-    #         attention_scores_mean[bidx,:,:,text_lens[bidx]-3:] = -999 # Ignore the last 3 timesteps
-    #         text_timesteps_attended = torch.argmax(attention_scores_mean[bidx], dim=-1)[0]
-    #         import ipdb; ipdb.set_trace()
-    #         audio_timesteps = torch.arange(0, audio_lens[bidx], device=attention_scores_mean.device)
-    #         cross_attention_matrix[bidx, 0, audio_timesteps, text_timesteps_attended] = 1.0
-    #     return cross_attention_matrix
-
     def compute_alignment_loss(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
         # attention scores: List of (B, C, audio_timesteps, text_timesteps)
         attention_scores_combined = torch.cat(attention_scores, dim=1) # (B, C, audio_timesteps, text_timesteps)
@@ -565,6 +550,16 @@ class T5TTS_Model(ModelPT):
         
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
+
+        if attn_prior is not None and self.cfg.get('ctc_prior_layer_ids', None) is not None:
+            ctc_prior_layer_ids = self.cfg.ctc_prior_layer_ids
+            # Convert prior to a list of tensors, one for each layer
+            # Set None for layers not in ctc_prior_layer_ids
+            if self.model_type == 'multi_encoder_context_tts':
+                text_attn_prior = [attn_prior[0] if layer_idx in ctc_prior_layer_ids else None for layer_idx in range(self.cfg.t5_decoder.n_layers) ]
+                attn_prior = [text_attn_prior, attn_prior[1]]
+            else:
+                attn_prior = [attn_prior if layer_idx in ctc_prior_layer_ids else None for layer_idx in range(self.cfg.t5_decoder.n_layers) ]
 
         return {
             'cond': cond,
@@ -678,7 +673,8 @@ class T5TTS_Model(ModelPT):
         alignment_loss = None
         if self.cfg.alignment_loss_scale > 0.0 and not disable_alignment_loss:
             text_lens = context_tensors['text_lens']
-            cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in self.transcript_decoder_layers]
+            ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
+            cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
             alignment_loss = self.compute_alignment_loss(cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size)
             loss = codebook_loss + alignment_loss
         else:
@@ -698,7 +694,6 @@ class T5TTS_Model(ModelPT):
             'context_audio_codes': context_tensors['context_audio_codes'],
             'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
             'dec_context_size' : dec_context_size,
-            'hard_cross_attention': self.compute_hard_alignment(cross_attention_scores, context_tensors['text_lens'], audio_codes_lens_target, dec_context_size),
         }
     
     def training_step(self, batch, batch_idx):
@@ -812,8 +807,8 @@ class T5TTS_Model(ModelPT):
             attended_timestep_counter = [{} for _ in range(text.size(0))]
             last_attended_timesteps = [[1 for _ in range(text.size(0))]] # Maintain a list of attended timesteps as we predict audio for each batch item
             for idx in range(max_decoder_steps):
-                # if idx % 20 == 0:
-                #     print(f"Decoding timestep {idx}")
+                if idx % 20 == 0:
+                    print(f"Decoding timestep {idx}")
                 audio_codes_embedded = self.embed_audio_tokens(audio_codes_input)
                 if context_tensors['additional_decoder_input'] is not None:
                     _audio_codes_embedded = torch.cat([context_tensors['additional_decoder_input'], audio_codes_embedded], dim=1)
@@ -833,6 +828,7 @@ class T5TTS_Model(ModelPT):
                     attn_prior = [attn_prior, None]
 
                 if use_cfg:
+                    # import ipdb; ipdb.set_trace()
                     batch_size = audio_codes_embedded.size(0)
                     # Combine conditional and unconditional inputs into one batch
                     if isinstance(context_tensors['cond'], list):

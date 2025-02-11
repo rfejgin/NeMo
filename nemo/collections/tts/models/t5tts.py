@@ -453,21 +453,6 @@ class T5TTS_Model(ModelPT):
                 new_prior = prior + (residual * (global_step - prior_scaledown_start_step) / (prior_end_step - prior_scaledown_start_step))
                 return new_prior
 
-    # def compute_hard_alignment(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
-    #     # attention scores: List of (B, C, audio_timesteps, text_timesteps)
-    #     attention_scores_combined = torch.cat(attention_scores, dim=1)
-    #     attention_scores_mean = attention_scores_combined.mean(dim=1, keepdim=True) # (B, 1, audio_timesteps, text_timesteps)
-    #     attention_scores_mean = attention_scores_mean[:, :, dec_context_size:, :] # Remove the context audio embeddings from the attention scores
-    #     cross_attention_matrix = torch.zeros_like(attention_scores_mean) # (B, 1, audio_timesteps, text_timesteps)
-    #     for bidx in range(attention_scores_mean.size(0)):
-    #         attention_scores_mean[bidx,:,:,0] = -999 # Ignore the first timestep
-    #         attention_scores_mean[bidx,:,:,text_lens[bidx]-3:] = -999 # Ignore the last 3 timesteps
-    #         text_timesteps_attended = torch.argmax(attention_scores_mean[bidx], dim=-1)[0]
-    #         import ipdb; ipdb.set_trace()
-    #         audio_timesteps = torch.arange(0, audio_lens[bidx], device=attention_scores_mean.device)
-    #         cross_attention_matrix[bidx, 0, audio_timesteps, text_timesteps_attended] = 1.0
-    #     return cross_attention_matrix
-
     def compute_alignment_loss(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
         # attention scores: List of (B, C, audio_timesteps, text_timesteps)
         attention_scores_combined = torch.cat(attention_scores, dim=1) # (B, C, audio_timesteps, text_timesteps)
@@ -565,6 +550,16 @@ class T5TTS_Model(ModelPT):
         
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
+
+        if attn_prior is not None and self.cfg.get('ctc_prior_layer_ids', None) is not None:
+            ctc_prior_layer_ids = self.cfg.ctc_prior_layer_ids
+            # Convert prior to a list of tensors, one for each layer
+            # Set None for layers not in ctc_prior_layer_ids
+            if self.model_type == 'multi_encoder_context_tts':
+                text_attn_prior = [attn_prior[0] if layer_idx in ctc_prior_layer_ids else None for layer_idx in range(self.cfg.t5_decoder.n_layers) ]
+                attn_prior = [text_attn_prior, attn_prior[1]]
+            else:
+                attn_prior = [attn_prior if layer_idx in ctc_prior_layer_ids else None for layer_idx in range(self.cfg.t5_decoder.n_layers) ]
 
         return {
             'cond': cond,
@@ -678,7 +673,8 @@ class T5TTS_Model(ModelPT):
         alignment_loss = None
         if self.cfg.alignment_loss_scale > 0.0 and not disable_alignment_loss:
             text_lens = context_tensors['text_lens']
-            cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in self.transcript_decoder_layers]
+            ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
+            cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
             alignment_loss = self.compute_alignment_loss(cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size)
             loss = codebook_loss + alignment_loss
         else:
@@ -698,7 +694,6 @@ class T5TTS_Model(ModelPT):
             'context_audio_codes': context_tensors['context_audio_codes'],
             'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
             'dec_context_size' : dec_context_size,
-            'hard_cross_attention': self.compute_hard_alignment(cross_attention_scores, context_tensors['text_lens'], audio_codes_lens_target, dec_context_size),
         }
     
     def training_step(self, batch, batch_idx):
@@ -737,8 +732,12 @@ class T5TTS_Model(ModelPT):
             self.log_train_val_example(logits, audio_codes_target, audio_codes_lens_target, context_audio_codes, context_audio_codes_lens)
             if self.model_type != 'decoder_pretrain_synthesizer' and len(attn_info[self.transcript_decoder_layers[0]]['cross_attn_probabilities']) > 1:
                 # cross_attn_probabilities only returned when not using flash attention
-                cross_attention_probs = [attn['cross_attn_probabilities'][0] for layer_idx, attn in enumerate(attn_info) if layer_idx in self.transcript_decoder_layers]
+                ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
+                cross_attention_probs = [attn['cross_attn_probabilities'][0] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
                 self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix="val_", dec_context_size=dec_context_size)
+                for layer_idx in self.transcript_decoder_layers:
+                    cross_attention_probs = [ attn_info[layer_idx]['cross_attn_probabilities'][0] ]
+                    self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix=f"val_layer_{layer_idx}_", dec_context_size=dec_context_size)
 
         val_output = {
             'val_loss': loss,
@@ -749,20 +748,41 @@ class T5TTS_Model(ModelPT):
 
         return val_output
     
-    def get_cross_attention_scores(self, attn_probs):
+    def get_cross_attention_scores(self, attn_probs, filter_layers=None):
         """
         Returns the cross attention probabilities for the last audio timestep
         """
         mean_cross_attn_scores = []
-        for layerwise_attn_prob in attn_probs:
+        all_heads_cross_attn_scores = []
+        for lidx, layerwise_attn_prob in enumerate(attn_probs):
+            if (filter_layers is not None and lidx not in filter_layers) or (lidx not in self.transcript_decoder_layers):
+                continue
             cross_attn_prob = layerwise_attn_prob['cross_attn_probabilities'][0] # B, H, audio_timesteps, text_timesteps
             mean_cross_attn_scores.append(cross_attn_prob.mean(dim=1)) # B, audio_timesteps, text_timesteps
+            for head_idx in range(cross_attn_prob.size(1)):
+                all_heads_cross_attn_scores.append(cross_attn_prob[:, head_idx, -1, :]) # B, text_timesteps
+
         mean_cross_attn_scores = torch.stack(mean_cross_attn_scores, dim=1) # B, L, audio_timesteps, text_timesteps
         mean_cross_attn_scores = mean_cross_attn_scores.mean(dim=1) # B, audio_timesteps, text_timesteps
         last_audio_timestep_scores = mean_cross_attn_scores[:, -1, :] # B, text_timesteps
-        return last_audio_timestep_scores
+        return last_audio_timestep_scores, all_heads_cross_attn_scores
     
-    def infer_batch(self, batch, max_decoder_steps=500, temperature=0.7, topk=80, use_cfg=False, cfg_scale=1.0, return_cross_attn_probs=False, apply_attention_prior=False, prior_epsilon=1e-5, lookahead_window_size=10):
+    def infer_batch(
+            self, 
+            batch, 
+            max_decoder_steps=500, 
+            temperature=0.7, 
+            topk=80, 
+            use_cfg=False, 
+            cfg_scale=1.0, 
+            return_cross_attn_probs=False, 
+            apply_attention_prior=False, 
+            prior_epsilon=1e-5, 
+            lookahead_window_size=10,
+            estimate_alignment_from_layers=None,
+            apply_prior_to_layers=None,
+            compute_all_heads_attn_maps=False,
+        ):
         with torch.no_grad():
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
             
@@ -785,6 +805,7 @@ class T5TTS_Model(ModelPT):
                 )
             
             cross_attention_scores_all_timesteps = []
+            all_heads_cross_attn_scores_all_timesteps = []
             _attn_prior = None
             unfinished_texts = {}
             finished_texts_counter = {}
@@ -800,8 +821,19 @@ class T5TTS_Model(ModelPT):
                 else:
                     _audio_codes_embedded = audio_codes_embedded
                     _audio_codes_mask = audio_codes_mask
+                
+                if apply_prior_to_layers is not None:
+                    attn_prior = [None for _ in range(self.cfg.t5_decoder.n_layers)]
+                    for layer_idx in apply_prior_to_layers:
+                        attn_prior[layer_idx] = _attn_prior
+                else:
+                    attn_prior = _attn_prior
+                
+                if self.model_type == 'multi_encoder_context_tts':
+                    attn_prior = [attn_prior, None]
 
                 if use_cfg:
+                    # import ipdb; ipdb.set_trace()
                     batch_size = audio_codes_embedded.size(0)
                     # Combine conditional and unconditional inputs into one batch
                     if isinstance(context_tensors['cond'], list):
@@ -821,7 +853,7 @@ class T5TTS_Model(ModelPT):
                         dec_input_mask=cfg_audio_codes_mask,
                         cond=cfg_cond,
                         cond_mask=cfg_cond_mask,
-                        attn_prior=_attn_prior,
+                        attn_prior=attn_prior,
                         multi_encoder_mapping=context_tensors['multi_encoder_mapping']
                     )
                     
@@ -835,12 +867,15 @@ class T5TTS_Model(ModelPT):
                         dec_input_mask=_audio_codes_mask,
                         cond=context_tensors['cond'],
                         cond_mask=context_tensors['cond_mask'],
-                        attn_prior=_attn_prior,
+                        attn_prior=attn_prior,
                         multi_encoder_mapping=context_tensors['multi_encoder_mapping']
                     )
                 
                 if return_cross_attn_probs or apply_attention_prior:
-                    cross_attention_scores = self.get_cross_attention_scores(attn_probs) # B, text_timesteps
+                    cross_attention_scores, all_heads_cross_attn_scores = self.get_cross_attention_scores(attn_probs) # B, text_timesteps
+                    alignment_attention_scores = cross_attention_scores
+                    if estimate_alignment_from_layers is not None:
+                        alignment_attention_scores, _ = self.get_cross_attention_scores(attn_probs, filter_layers=estimate_alignment_from_layers) # B, text_timesteps
                     text_time_step_attended = []
                     for bidx in range(batch_size):
                         last_attended_timestep = last_attended_timesteps[-1][bidx]
@@ -849,7 +884,7 @@ class T5TTS_Model(ModelPT):
                             last_attended_timestep += 1
                         window_size = lookahead_window_size
                         window_end = min(last_attended_timestep + window_size, context_tensors['text_lens'][bidx] - 3) # Ignore the last 3 timesteps
-                        item_attention_scores = cross_attention_scores[bidx,last_attended_timestep:window_end]
+                        item_attention_scores = alignment_attention_scores[bidx,last_attended_timestep:window_end]
                         if item_attention_scores.size(0) == 0:
                             # This means the sentence has ended
                             attended_timestep = context_tensors['text_lens'][bidx] - 1
@@ -860,6 +895,7 @@ class T5TTS_Model(ModelPT):
 
                     last_attended_timesteps.append(text_time_step_attended)
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
+                    all_heads_cross_attn_scores_all_timesteps.append(all_heads_cross_attn_scores)
                     # if idx % 20 == 0:
                     # print("At timesteps", idx, text_time_step_attended, context_tensors['text_lens'])
                 
@@ -875,6 +911,7 @@ class T5TTS_Model(ModelPT):
                                 # Very short sentences, No Prior
                                 _attn_prior[bidx, 0, :] = 1.0
                             else:
+                                _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-2)] = 0.1 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 0.8 # Slightly bias to continue moving forward. Not very important.
                                 _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1, _text_len - 1) ] = 1.0
@@ -933,12 +970,27 @@ class T5TTS_Model(ModelPT):
             torch.cuda.empty_cache()
             if return_cross_attn_probs:
                 cross_attention_scores_all_timesteps = torch.stack(cross_attention_scores_all_timesteps, dim=2) # B, text_timesteps, T'
+                
+                headwise_cross_attention_scores_all_timesteps = []
+                for hidx in range(len(all_heads_cross_attn_scores_all_timesteps[0])):
+                    head_cross_attention_all_timesteps = torch.stack([x[hidx] for x in all_heads_cross_attn_scores_all_timesteps], dim=2) # B, text_timesteps, T'
+                    headwise_cross_attention_scores_all_timesteps.append(head_cross_attention_all_timesteps)
+
                 cross_attention_maps = []
+                headwise_cross_attention_maps = []
                 for bidx in range(predicted_audio.size(0)):
                     item_cross_attention_scores = cross_attention_scores_all_timesteps[bidx,:context_tensors['text_lens'][bidx],:predicted_codes_lens[bidx]]
                     cross_attn_np = plot_alignment_to_numpy(item_cross_attention_scores.cpu().numpy())
                     cross_attention_maps.append(cross_attn_np)
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attention_maps
+                    item_all_head_cross_attn_maps = []
+                    if compute_all_heads_attn_maps:
+                        for hidx in range(len(all_heads_cross_attn_scores_all_timesteps[0])):
+                            item_headwise_cross_attention_scores = headwise_cross_attention_scores_all_timesteps[hidx][bidx,:context_tensors['text_lens'][bidx],:predicted_codes_lens[bidx]]
+                            headwise_cross_attn_np = plot_alignment_to_numpy(item_headwise_cross_attention_scores.cpu().numpy())
+                            item_all_head_cross_attn_maps.append(headwise_cross_attn_np)
+                        headwise_cross_attention_maps.append(item_all_head_cross_attn_maps)
+
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attention_maps, headwise_cross_attention_maps
             else:
                 # For backward compatibility
                 return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens

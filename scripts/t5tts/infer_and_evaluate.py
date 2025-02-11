@@ -138,7 +138,7 @@ def run_inference(
                 
                 import time
                 st = time.time()
-                predicted_audio, predicted_audio_lens, _, _, cross_attention_maps  = model.infer_batch(
+                predicted_audio, predicted_audio_lens, _, _, cross_attention_maps, _  = model.infer_batch(
                     batch_cuda, 
                     max_decoder_steps=440, 
                     temperature=temperature, 

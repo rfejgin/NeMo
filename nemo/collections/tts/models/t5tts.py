@@ -861,7 +861,7 @@ class T5TTS_Model(ModelPT):
                     last_attended_timesteps.append(text_time_step_attended)
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
                     # if idx % 20 == 0:
-                    #     print("At timesteps", text_time_step_attended, context_tensors['text_lens'])
+                    # print("At timesteps", idx, text_time_step_attended, context_tensors['text_lens'])
                 
                 if apply_attention_prior and idx >= 10:
                     eps = prior_epsilon
@@ -887,7 +887,7 @@ class T5TTS_Model(ModelPT):
                                     _attn_prior[bidx, 0, _timestep] = eps
 
                             unfinished_texts[bidx] = False
-                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 10:
+                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 6:
                                 # This means the sentence has definitely not ended
                                 if bidx not in finished_texts_counter and bidx not in end_indices:
                                     unfinished_texts[bidx] = True

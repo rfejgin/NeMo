@@ -779,6 +779,7 @@ class T5TTS_Model(ModelPT):
             apply_attention_prior=False, 
             prior_epsilon=1e-5, 
             lookahead_window_size=10,
+            estimate_alignment_from_layers=None,
             apply_prior_to_layers=None,
             compute_all_heads_attn_maps=False,
         ):
@@ -871,7 +872,10 @@ class T5TTS_Model(ModelPT):
                     )
                 
                 if return_cross_attn_probs or apply_attention_prior:
-                    cross_attention_scores, all_heads_cross_attn_scores = self.get_cross_attention_scores(attn_probs, filter_layers=apply_prior_to_layers) # B, text_timesteps
+                    cross_attention_scores, all_heads_cross_attn_scores = self.get_cross_attention_scores(attn_probs) # B, text_timesteps
+                    alignment_attention_scores = cross_attention_scores
+                    if estimate_alignment_from_layers is not None:
+                        alignment_attention_scores, _ = self.get_cross_attention_scores(attn_probs, filter_layers=estimate_alignment_from_layers) # B, text_timesteps
                     text_time_step_attended = []
                     for bidx in range(batch_size):
                         last_attended_timestep = last_attended_timesteps[-1][bidx]
@@ -880,7 +884,7 @@ class T5TTS_Model(ModelPT):
                             last_attended_timestep += 1
                         window_size = lookahead_window_size
                         window_end = min(last_attended_timestep + window_size, context_tensors['text_lens'][bidx] - 3) # Ignore the last 3 timesteps
-                        item_attention_scores = cross_attention_scores[bidx,last_attended_timestep:window_end]
+                        item_attention_scores = alignment_attention_scores[bidx,last_attended_timestep:window_end]
                         if item_attention_scores.size(0) == 0:
                             # This means the sentence has ended
                             attended_timestep = context_tensors['text_lens'][bidx] - 1
@@ -907,6 +911,7 @@ class T5TTS_Model(ModelPT):
                                 # Very short sentences, No Prior
                                 _attn_prior[bidx, 0, :] = 1.0
                             else:
+                                _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-2)] = 0.1 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 0.8 # Slightly bias to continue moving forward. Not very important.
                                 _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1, _text_len - 1) ] = 1.0

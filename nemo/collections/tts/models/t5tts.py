@@ -732,7 +732,8 @@ class T5TTS_Model(ModelPT):
             self.log_train_val_example(logits, audio_codes_target, audio_codes_lens_target, context_audio_codes, context_audio_codes_lens)
             if self.model_type != 'decoder_pretrain_synthesizer' and len(attn_info[self.transcript_decoder_layers[0]]['cross_attn_probabilities']) > 1:
                 # cross_attn_probabilities only returned when not using flash attention
-                cross_attention_probs = [attn['cross_attn_probabilities'][0] for layer_idx, attn in enumerate(attn_info) if layer_idx in self.transcript_decoder_layers]
+                ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
+                cross_attention_probs = [attn['cross_attn_probabilities'][0] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
                 self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix="val_", dec_context_size=dec_context_size)
 
         val_output = {

@@ -781,6 +781,7 @@ class T5TTS_Model(ModelPT):
             lookahead_window_size=10,
             estimate_alignment_from_layers=None,
             apply_prior_to_layers=None,
+            start_prior_after_n_audio_steps=10,
             compute_all_heads_attn_maps=False,
         ):
         with torch.no_grad():
@@ -899,7 +900,7 @@ class T5TTS_Model(ModelPT):
                     # if idx % 20 == 0:
                     # print("At timesteps", idx, text_time_step_attended, context_tensors['text_lens'])
                 
-                if apply_attention_prior and idx >= 10:
+                if apply_attention_prior and idx >= start_prior_after_n_audio_steps:
                     eps = prior_epsilon
                     # Attn prior for the next timestep
                     _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + eps
@@ -911,7 +912,7 @@ class T5TTS_Model(ModelPT):
                                 # Very short sentences, No Prior
                                 _attn_prior[bidx, 0, :] = 1.0
                             else:
-                                _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-2)] = 0.1 # Slight exposure to history for better pronounciation. Not very important.
+                                # _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-2)] = 0.1 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 0.8 # Slightly bias to continue moving forward. Not very important.
                                 _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1, _text_len - 1) ] = 1.0

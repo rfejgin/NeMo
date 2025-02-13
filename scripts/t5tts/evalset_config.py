@@ -49,8 +49,8 @@ dataset_meta_info = {
         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',
         'feature_dir' : '/datap/misc/Datasets/VCTK-Corpus',
     },
-    'riva_challenging': {
-        'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/challengingLindyRodney__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withContextAudioPaths.json',
+    'riva_challenging_filtered': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/from_paarth/riva_challenging_filtered.json',
         'audio_dir' : '/datap/misc/Datasets/riva',
         'feature_dir' : '/datap/misc/Datasets/riva',
     },

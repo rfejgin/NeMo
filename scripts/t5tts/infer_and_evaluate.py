@@ -74,7 +74,19 @@ def run_inference(
     # import ipdb; ipdb.set_trace()
 
     checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
-    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale, apply_attention_prior, attention_prior_epsilon, attention_prior_lookahead_window)
+    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}_start{}_Estlayers{}_PrLayers{}".format(
+        checkpoint_name, 
+        temperature, 
+        topk, 
+        use_cfg, 
+        cfg_scale, 
+        apply_attention_prior, 
+        attention_prior_epsilon, 
+        attention_prior_lookahead_window,
+        start_prior_after_n_audio_steps,
+        "".join([str(l) for l in estimate_alignment_from_layers]) if estimate_alignment_from_layers is not None else "None",
+        "".join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else "None"
+    )
     dataset_meta_info = evalset_config.dataset_meta_info
     for dataset in datasets:
         metrics_n_repeated = []

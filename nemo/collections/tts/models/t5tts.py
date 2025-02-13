@@ -925,20 +925,22 @@ class T5TTS_Model(ModelPT):
                                     _attn_prior[bidx, 0, _timestep] = eps
 
                             unfinished_texts[bidx] = False
-                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 6:
+                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 3:
                                 # This means the sentence has definitely not ended
-                                if bidx not in finished_texts_counter and bidx not in end_indices:
+                                if bidx not in end_indices:
                                     unfinished_texts[bidx] = True
                             
                             if text_time_step_attended[bidx] >= context_tensors['text_lens'][bidx] - 5 or bidx in end_indices:
-                                unfinished_texts[bidx] = False
                                 if bidx not in finished_texts_counter:
                                     finished_texts_counter[bidx] = 0
                             
                 for key in finished_texts_counter:
                     finished_texts_counter[key] += 1
+                    if finished_texts_counter[key] > 10:
+                        # We should allow EOS to be predicted now.
+                        unfinished_texts[bidx] = False
                 
-                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 20} # Items that have been close to the end for atleast 10 timesteps
+                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 20} # Items that have been close to the end for atleast 20 timesteps
                 unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)

@@ -114,12 +114,7 @@ def run_inference(
     model.cuda()
     model.eval()
     # import ipdb; ipdb.set_trace()
-    estimate_from=[7]
-    apply_to=[4,5,6,7,8,9,10]
     checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
-<<<<<<< HEAD
-    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}_est_{}_apply{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale, apply_attention_prior, attention_prior_epsilon, attention_prior_lookahead_window, int_list_to_str(estimate_from), int_list_to_str(apply_to))
-=======
     checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}_start{}_Estlayers{}_PrLayers{}".format(
         checkpoint_name, 
         temperature, 
@@ -133,7 +128,6 @@ def run_inference(
         "".join([str(l) for l in estimate_alignment_from_layers]) if estimate_alignment_from_layers is not None else "None",
         "".join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else "None"
     )
->>>>>>> paarth/experimentalt5tts_finalizedtransformer_inferencehackclean
     dataset_meta_info = evalset_config.dataset_meta_info
     for dataset in datasets:
         metrics_n_repeated = []
@@ -211,14 +205,9 @@ def run_inference(
                     apply_attention_prior=apply_attention_prior,
                     prior_epsilon=attention_prior_epsilon,
                     lookahead_window_size=attention_prior_lookahead_window,
-<<<<<<< HEAD
-                    estimate_alignment_from_layers=estimate_from,
-                    apply_prior_to_layers=apply_to
-=======
                     estimate_alignment_from_layers=estimate_alignment_from_layers,
                     apply_prior_to_layers=apply_prior_to_layers,
                     start_prior_after_n_audio_steps=start_prior_after_n_audio_steps
->>>>>>> paarth/experimentalt5tts_finalizedtransformer_inferencehackclean
                 )
                 
                 et = time.time()

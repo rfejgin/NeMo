@@ -933,8 +933,7 @@ class T5TTS_Model(ModelPT):
                             if text_time_step_attended[bidx] >= context_tensors['text_lens'][bidx] - 5 or bidx in end_indices:
                                 if bidx not in finished_texts_counter:
                                     finished_texts_counter[bidx] = 0
-                              
-                            
+
                 for key in finished_texts_counter:
                     finished_texts_counter[key] += 1
                     if finished_texts_counter[key] > 10:

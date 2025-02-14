@@ -67,6 +67,9 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
 
+def int_list_to_str(l):
+    return "_".join([str(d) for d in l])
+
 def run_inference(
         hparams_file, 
         checkpoint_file, 
@@ -108,9 +111,10 @@ def run_inference(
     model.cuda()
     model.eval()
     # import ipdb; ipdb.set_trace()
-
+    estimate_from=[7]
+    apply_to=[4,5,6,7,8,9,10]
     checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
-    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale, apply_attention_prior, attention_prior_epsilon, attention_prior_lookahead_window)
+    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}_est_{}_apply{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale, apply_attention_prior, attention_prior_epsilon, attention_prior_lookahead_window, int_list_to_str(estimate_from), int_list_to_str(apply_to))
     dataset_meta_info = evalset_config.dataset_meta_info
     for dataset in datasets:
         metrics_n_repeated = []
@@ -187,7 +191,9 @@ def run_inference(
                     return_cross_attn_probs=True, 
                     apply_attention_prior=apply_attention_prior,
                     prior_epsilon=attention_prior_epsilon,
-                    lookahead_window_size=attention_prior_lookahead_window
+                    lookahead_window_size=attention_prior_lookahead_window,
+                    estimate_alignment_from_layers=estimate_from,
+                    apply_prior_to_layers=apply_to
                 )
                 
                 et = time.time()
@@ -204,12 +210,12 @@ def run_inference(
                     target_audio_path = manifest_records[item_idx].get('audio_filepath', None)
                     if context_audio_path is not None:
                         context_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], context_audio_path)
+                        if os.path.exists(context_audio_path):
+                            shutil.copy(context_audio_path, os.path.join(audio_dir, f"context_audio_{item_idx}.wav"))
                     if target_audio_path is not None:
                         target_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], target_audio_path)
-                    if os.path.exists(context_audio_path):
-                        shutil.copy(context_audio_path, os.path.join(audio_dir, f"context_audio_{item_idx}.wav"))
-                    if os.path.exists(target_audio_path):
-                        shutil.copy(target_audio_path, os.path.join(audio_dir, f"target_audio_{item_idx}.wav"))
+                        if os.path.exists(target_audio_path):
+                            shutil.copy(target_audio_path, os.path.join(audio_dir, f"target_audio_{item_idx}.wav"))
                     item_idx += 1
             
             metrics, filewise_metrics = evaluate_generated_audio.evaluate(
@@ -270,8 +276,8 @@ def compare_md5sums(local_path, remote_path, server_address):
 
 def main():
     parser = argparse.ArgumentParser(description='Experiment Evaluation')
-    parser.add_argument('--hparams_file', type=str)
-    parser.add_argument('--checkpoint_file', type=str)
+    parser.add_argument('--hparams_files', type=str)
+    parser.add_argument('--checkpoint_files', type=str)
     parser.add_argument('--codecmodel_path', type=str, default="/data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo")
     parser.add_argument('--datasets', type=str, default="libri_dev_clean_eval_large")
     parser.add_argument('--base_exp_dir', type=str, default="/home/rfejgin/portfolio-cs-oci/experiments/")

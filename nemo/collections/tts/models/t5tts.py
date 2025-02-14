@@ -781,6 +781,7 @@ class T5TTS_Model(ModelPT):
             lookahead_window_size=10,
             estimate_alignment_from_layers=None,
             apply_prior_to_layers=None,
+            start_prior_after_n_audio_steps=10,
             compute_all_heads_attn_maps=False,
         ):
         with torch.no_grad():
@@ -883,7 +884,7 @@ class T5TTS_Model(ModelPT):
                             # This is probably an attention sink! Move to the next timestep
                             last_attended_timestep += 1
                         window_size = lookahead_window_size
-                        window_end = min(last_attended_timestep + window_size, context_tensors['text_lens'][bidx] -1)# - 3) # Ignore the last 3 timesteps
+                        window_end = min(last_attended_timestep + window_size, context_tensors['text_lens'][bidx] - 3) # Ignore the last 3 timesteps
                         item_attention_scores = alignment_attention_scores[bidx,last_attended_timestep:window_end]
                         if item_attention_scores.size(0) == 0:
                             # This means the sentence has ended
@@ -899,7 +900,7 @@ class T5TTS_Model(ModelPT):
                     # if idx % 20 == 0:
                     # print("At timesteps", idx, text_time_step_attended, context_tensors['text_lens'])
                 
-                if apply_attention_prior and idx >= 10:
+                if apply_attention_prior and idx >= start_prior_after_n_audio_steps:
                     eps = prior_epsilon
                     # Attn prior for the next timestep
                     _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + eps
@@ -911,7 +912,7 @@ class T5TTS_Model(ModelPT):
                                 # Very short sentences, No Prior
                                 _attn_prior[bidx, 0, :] = 1.0
                             else:
-                                _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-2)] = 0.1 # Slight exposure to history for better pronounciation. Not very important.
+                                # _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-2)] = 0.1 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
                                 _attn_prior[bidx, 0, text_time_step_attended[bidx]] = 0.8 # Slightly bias to continue moving forward. Not very important.
                                 _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1, _text_len - 1) ] = 1.0
@@ -924,13 +925,12 @@ class T5TTS_Model(ModelPT):
                                     _attn_prior[bidx, 0, _timestep] = eps
 
                             unfinished_texts[bidx] = False
-                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx]-1:# 6:
+                            if text_time_step_attended[bidx] < context_tensors['text_lens'][bidx] - 3:
                                 # This means the sentence has definitely not ended
-                                #if bidx not in finished_texts_counter and bidx not in end_indices:
-                                if bidx not in end_indices:                                
-                                  unfinished_texts[bidx] = True
+                                if bidx not in end_indices:
+                                    unfinished_texts[bidx] = True
                             
-                            if text_time_step_attended[bidx] >= context_tensors['text_lens'][bidx] - 5 or bidx in end_indices:                            
+                            if text_time_step_attended[bidx] >= context_tensors['text_lens'][bidx] - 5 or bidx in end_indices:
                                 if bidx not in finished_texts_counter:
                                     finished_texts_counter[bidx] = 0
                               
@@ -938,9 +938,10 @@ class T5TTS_Model(ModelPT):
                 for key in finished_texts_counter:
                     finished_texts_counter[key] += 1
                     if finished_texts_counter[key] > 10:
+                        # We should allow EOS to be predicted now.
                         unfinished_texts[bidx] = False
                 
-                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 20} # Items that have been close to the end for atleast 10 timesteps
+                finished_items = {k: v for k, v in finished_texts_counter.items() if v >= 20} # Items that have been close to the end for atleast 20 timesteps
                 unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)

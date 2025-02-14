@@ -84,7 +84,10 @@ def run_inference(
         num_repeats=1, 
         apply_attention_prior=False,
         attention_prior_epsilon=1e-3,
-        attention_prior_lookahead_window=10    
+        attention_prior_lookahead_window=10,
+        estimate_alignment_from_layers=None,
+        apply_prior_to_layers=None,
+        start_prior_after_n_audio_steps=10
     ):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
@@ -114,7 +117,23 @@ def run_inference(
     estimate_from=[7]
     apply_to=[4,5,6,7,8,9,10]
     checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
+<<<<<<< HEAD
     checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}_est_{}_apply{}".format(checkpoint_name, temperature, topk, use_cfg, cfg_scale, apply_attention_prior, attention_prior_epsilon, attention_prior_lookahead_window, int_list_to_str(estimate_from), int_list_to_str(apply_to))
+=======
+    checkpoint_name = "{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_{}_{}_start{}_Estlayers{}_PrLayers{}".format(
+        checkpoint_name, 
+        temperature, 
+        topk, 
+        use_cfg, 
+        cfg_scale, 
+        apply_attention_prior, 
+        attention_prior_epsilon, 
+        attention_prior_lookahead_window,
+        start_prior_after_n_audio_steps,
+        "".join([str(l) for l in estimate_alignment_from_layers]) if estimate_alignment_from_layers is not None else "None",
+        "".join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else "None"
+    )
+>>>>>>> paarth/experimentalt5tts_finalizedtransformer_inferencehackclean
     dataset_meta_info = evalset_config.dataset_meta_info
     for dataset in datasets:
         metrics_n_repeated = []
@@ -192,8 +211,14 @@ def run_inference(
                     apply_attention_prior=apply_attention_prior,
                     prior_epsilon=attention_prior_epsilon,
                     lookahead_window_size=attention_prior_lookahead_window,
+<<<<<<< HEAD
                     estimate_alignment_from_layers=estimate_from,
                     apply_prior_to_layers=apply_to
+=======
+                    estimate_alignment_from_layers=estimate_alignment_from_layers,
+                    apply_prior_to_layers=apply_prior_to_layers,
+                    start_prior_after_n_audio_steps=start_prior_after_n_audio_steps
+>>>>>>> paarth/experimentalt5tts_finalizedtransformer_inferencehackclean
                 )
                 
                 et = time.time()
@@ -292,11 +317,21 @@ def main():
     parser.add_argument('--apply_attention_prior', action='store_true')
     parser.add_argument('--attention_prior_epsilon', type=float, default=1e-3)
     parser.add_argument('--attention_prior_lookahead_window', type=int, default=10)
+    parser.add_argument('--estimate_alignment_from_layers', type=str, default=None)
+    parser.add_argument('--apply_prior_to_layers', type=str, default=None)
+    parser.add_argument('--start_prior_after_n_audio_steps', type=int, default=10)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_repeats', type=int, default=1)
 
     args = parser.parse_args()
+
+    estimate_alignment_from_layers = None
+    if args.estimate_alignment_from_layers is not None:
+        estimate_alignment_from_layers = [int(l.strip()) for l in args.estimate_alignment_from_layers.split(",")]
+    apply_prior_to_layers = None
+    if args.apply_prior_to_layers is not None:
+        apply_prior_to_layers = [int(l.strip()) for l in args.apply_prior_to_layers.split(",")]
 
     if (args.hparams_files is not None) and (args.checkpoint_files is not None) and (args.hparams_files != "null"):
         hparam_files = args.hparams_files.split(",")
@@ -319,7 +354,10 @@ def main():
                 num_repeats=args.num_repeats,
                 apply_attention_prior=args.apply_attention_prior,
                 attention_prior_epsilon=args.attention_prior_epsilon,
-                attention_prior_lookahead_window=args.attention_prior_lookahead_window
+                attention_prior_lookahead_window=args.attention_prior_lookahead_window,
+                estimate_alignment_from_layers=estimate_alignment_from_layers,
+                apply_prior_to_layers=apply_prior_to_layers,
+                start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps
             )
         return
     else:
@@ -382,7 +420,10 @@ def main():
                 num_repeats=args.num_repeats,
                 apply_attention_prior=args.apply_attention_prior,
                 attention_prior_epsilon=args.attention_prior_epsilon,
-                attention_prior_lookahead_window=args.attention_prior_lookahead_window
+                attention_prior_lookahead_window=args.attention_prior_lookahead_window,
+                estimate_alignment_from_layers=estimate_alignment_from_layers,
+                apply_prior_to_layers=apply_prior_to_layers,
+                start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps
             )
             
 

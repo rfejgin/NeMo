@@ -966,7 +966,7 @@ class T5TTS_Model(ModelPT):
                     break
             
             predicted_codes = torch.stack(all_predictions, dim=-1) # (B, num_codebooks, T')
-            predicted_lens = [ max(end_indices.get(idx, max_decoder_steps),4) for idx in range(text.size(0))] # Ensure that the codec is atleast of length 4
+            predicted_lens = [ end_indices.get(idx, max_decoder_steps) for idx in range(text.size(0))] # Ensure that the codec is atleast of length 4
             predicted_codes_lens = torch.tensor(predicted_lens, device=text.device).long()
 
             predicted_audio, predicted_audio_lens = self.codes_to_audio(predicted_codes, predicted_codes_lens)

@@ -12,7 +12,7 @@ def main():
     parser.add_argument("--generated_audio_dir", type=str, default="/Data/Experiments/NewT5TTSDPO/Debug/Generations/T5TTS/version_0/audios")
     parser.add_argument("--group_size", type=int, default=4)
     parser.add_argument("--cer_threshold", type=float, default=0.02)
-    parser.add_argument("--min_length_threshold", type=float, default=1.5, help="Minimum length permitted. Set this shorter to allow very short sentences (which can be important in for DPO tuning.")
+    parser.add_argument("--min_length_threshold", type=float, default=1.5, help="Minimum length permitted. Set this shorter to allow very short sentences (which can be useful for DPO tuning.")
     parser.add_argument("--val_size", type=int, default=64)
     args = parser.parse_args()
 

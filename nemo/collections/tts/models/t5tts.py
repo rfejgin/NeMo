@@ -960,12 +960,13 @@ class T5TTS_Model(ModelPT):
                 audio_codes_input = torch.cat([audio_codes_input, audio_codes_next.unsqueeze(-1)], dim=-1) # (B, C, T')
                 audio_codes_lens = audio_codes_lens + 1
                 audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
-                if len(end_indices) == text.size(0):
+                if len(end_indices) == text.size(0) and len(all_predictions) >= 4:
+                    # Codec must be of atleast 4 timesteps to be decoded properly
                     print("All ends reached")
                     break
             
             predicted_codes = torch.stack(all_predictions, dim=-1) # (B, num_codebooks, T')
-            predicted_lens = [end_indices.get(idx, max_decoder_steps) for idx in range(text.size(0))]
+            predicted_lens = [ max(end_indices.get(idx, max_decoder_steps),4) for idx in range(text.size(0))] # Ensure that the codec is atleast of length 4
             predicted_codes_lens = torch.tensor(predicted_lens, device=text.device).long()
 
             predicted_audio, predicted_audio_lens = self.codes_to_audio(predicted_codes, predicted_codes_lens)

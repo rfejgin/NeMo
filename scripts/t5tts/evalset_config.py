@@ -14,6 +14,11 @@ dataset_meta_info = {
         'audio_dir': '/datap/misc/Datasets/LibriTTS/dev-clean-for-zs',
         'feature_dir':'/'
     },
+    'zs_subjective_pre_post': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/zs_subjective_libridevclean_speakers_20_no_escapes__normalized_pre_post_text.json',
+        'audio_dir': '/datap/misc/Datasets/LibriTTS/dev-clean-for-zs',
+        'feature_dir':'/'
+    },    
     'riva_short': {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/riva_short_sentences.json',
         'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",

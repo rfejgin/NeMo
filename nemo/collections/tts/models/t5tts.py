@@ -761,6 +761,8 @@ class T5TTS_Model(ModelPT):
         else:
             loss = codebook_loss_scale * codebook_loss
         
+        local_transformer_loss = None
+        local_transformer_logits = None
         if self.cfg.get('use_local_transformer', False):
             local_transformer_logits = self.compute_local_transformer_logits(dec_out[:,dec_context_size:,:], audio_codes_target)
             local_transformer_loss, _ = self.compute_loss(local_transformer_logits, audio_codes_target, audio_codes_lens_target)
@@ -772,6 +774,8 @@ class T5TTS_Model(ModelPT):
             'attn_info' : attn_info,
             'loss': loss,
             'codebook_loss': codebook_loss,
+            'local_transformer_loss' : local_transformer_loss,
+            'local_transformer_logits' : local_transformer_logits,
             'loss_mask': loss_mask,
             'alignment_loss': alignment_loss,
             'audio_codes_target': audio_codes_target,
@@ -795,6 +799,9 @@ class T5TTS_Model(ModelPT):
             if alignment_loss is not None:
                 self.log('train_alignment_loss', alignment_loss, prog_bar=True, sync_dist=True)
         self.log('train_loss', loss, prog_bar=True, sync_dist=True)
+        local_transformer_loss = batch_output['local_transformer_loss']
+        if local_transformer_loss is not None:
+            self.log('train_local_transformer_loss', local_transformer_loss, prog_bar=True, sync_dist=True)
         
         return loss
     
@@ -826,10 +833,12 @@ class T5TTS_Model(ModelPT):
                     cross_attention_probs = [ attn_info[layer_idx]['cross_attn_probabilities'][0] ]
                     self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix=f"val_layer_{layer_idx}_", dec_context_size=dec_context_size)
 
+        local_transformer_loss = batch_output['local_transformer_loss']
         val_output = {
             'val_loss': loss,
             'val_codebook_loss': codebook_loss,
             'val_alignment_loss': alignment_loss,
+            'val_local_transformer_loss': local_transformer_loss,
         }
         self.validation_step_outputs.append(val_output)
 
@@ -1127,6 +1136,9 @@ class T5TTS_Model(ModelPT):
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
         self.log("val_codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
         self.log("val_alignment_loss", val_alignment_loss, prog_bar=True, sync_dist=True)
+        if self.cfg.get('use_local_transformer', False):
+            val_local_transformer_loss = collect("val_local_transformer_loss")
+            self.log("val_local_transformer_loss", val_local_transformer_loss, prog_bar=True, sync_dist=True)
         self.validation_step_outputs.clear()  # free memory
 
     def get_dataset(self, cfg, dataset_type):

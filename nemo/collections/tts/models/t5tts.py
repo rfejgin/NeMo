@@ -156,6 +156,26 @@ class T5TTS_Model(ModelPT):
         self.t5_decoder = t5tts_transformer.Transformer(**dict(cfg.t5_decoder))
 
         self.final_proj = nn.Linear(cfg.t5_decoder.d_model, cfg.num_audio_codebooks * cfg.num_audio_tokens_per_codebook)
+        if cfg.get('use_local_transformer', False):
+            local_transformer_hidden_dim = cfg.get('local_transformer_hidden_dim', 256)
+            if local_transformer_hidden_dim != cfg.t5_decoder.d_model:
+                self.local_transformer_in_projection = nn.Linear(cfg.t5_decoder.d_model, local_transformer_hidden_dim)
+            else:
+                self.local_transformer_in_projection = nn.Identity()
+            self.local_transformer = t5tts_transformer.Transformer(
+                n_layers=self.cfg.get('local_transformer_n_layers', 2),
+                d_model=local_transformer_hidden_dim,
+                d_ffn=local_transformer_hidden_dim*4,
+                sa_n_heads=self.cfg.get('local_transformer_n_heads', 1),
+                kernel_size=1,
+                is_causal=True,
+                max_length_causal_mask=cfg.num_audio_codebooks+2,
+                use_learnable_pos_emb=True,
+            )
+            local_transformer_out_projections = []
+            for _ in range(cfg.num_audio_codebooks):
+                local_transformer_out_projections.append(nn.Linear(local_transformer_hidden_dim, cfg.num_audio_tokens_per_codebook))
+            self.local_transformer_out_projections = nn.ModuleList(local_transformer_out_projections)
 
         codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False)
         # del codec discriminator to free memory
@@ -299,6 +319,38 @@ class T5TTS_Model(ModelPT):
             )
             return speaker_embeddings
 
+    def compute_local_transformer_logits(self, dec_out, audio_codes_target):
+        """
+        Loss from the autoregrssive codebook predictor (used per frame)
+        """
+        # dec_out: (B, T', E)
+        # audio_codes: (B, C, T')
+        dec_out_all = dec_out.reshape(-1, dec_out.size(-1)) # (B*T', E)
+        local_transformer_input = [dec_out_all]
+        for codebook_num in range(audio_codes_target.size(1)):
+            codes = audio_codes_target[:, codebook_num] # (B, T')
+            codes = codes.reshape(-1) # (B*T',)
+            codebook_embedding = self.audio_embeddings[codebook_num](codes) # (B*T', E)
+            local_transformer_input.append(codebook_embedding)
+        
+        local_transformer_input = torch.stack(local_transformer_input, dim=1) # (B*T', C+1, E)
+        local_transformer_input = self.local_transformer_in_projection(local_transformer_input) # (B*T', C+1, 128)
+        _mask = torch.ones( local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device)
+        local_transformer_output = self.local_transformer(local_transformer_input, _mask)['output'] # (B*T', C+1, E)
+        local_transformer_output = local_transformer_output[:, :-1, :] # (B*T', C, E)
+        all_code_logits = []
+        for codebook_num in range(audio_codes_target.size(1)):
+            # Using a separate projection layer for each codebook (to distinguish between them)
+            codebook_logits = self.local_transformer_out_projections[codebook_num](local_transformer_output[:, codebook_num, :]) # (B*T', num_audio_tokens_per_codebook)
+            all_code_logits.append(codebook_logits)
+        all_code_logits = torch.cat(all_code_logits, dim=1) # (B*T', num_codebooks * num_audio_tokens_per_codebook)
+
+        all_code_logits = all_code_logits.view(
+            audio_codes_target.size(0), audio_codes_target.size(2), -1
+        ) # (B, T', C * num_audio_tokens_per_codebook)
+        
+        return all_code_logits
+    
     def compute_loss(self, logits, audio_codes, audio_codes_lens):
         # logits: (B, T', num_codebooks * num_tokens_per_codebook)
         # audio_codes: (B, C, T')
@@ -335,7 +387,7 @@ class T5TTS_Model(ModelPT):
         )
         attn_probabilities = decoder_out['attn_probabilities']
         all_code_logits = self.final_proj(decoder_out['output']) # (B, T', num_codebooks * num_tokens_per_codebook)
-        return all_code_logits, attn_probabilities
+        return all_code_logits, attn_probabilities, decoder_out['output']
     
     def logits_to_audio_codes(self, all_code_logits, audio_codes_lens):
         # all_code_logits: (B, T', num_codebooks * num_tokens_per_codebook)
@@ -355,6 +407,34 @@ class T5TTS_Model(ModelPT):
         all_preds = all_preds * audio_mask.unsqueeze(1)
 
         return all_preds
+
+    def sample_codes_from_local_transformer(self, dec_output, temperature=0.7, topk=80, unfinished_items={}, finished_items={}):
+        # dec_output: (B, 1, E)
+        local_transformer_input = self.local_transformer_in_projection(dec_output) # (B, 1, 128)
+        all_preds = []
+        for codebook_num in range(self.cfg.num_audio_codebooks):
+            local_transformer_output = self.local_transformer(local_transformer_input, None)['output'] # (B, T, 128)
+            codebook_logits = self.local_transformer_out_projections[codebook_num](local_transformer_output[:, -1, :]) # (B, num_audio_tokens_per_codebook)
+            for item_idx in unfinished_items:
+                codebook_logits[item_idx, self.audio_eos_id] = float('-inf')
+            for item_idx in finished_items:
+                codebook_logits[item_idx, :] = float('-inf')
+                codebook_logits[item_idx, self.audio_eos_id] = 0.0
+
+            codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0] # (B, topk)
+            indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(-1) # (B, num_tokens_per_codebook)
+            codebook_logits_rescored = codebook_logits.clone()
+            codebook_logits_rescored[indices_to_remove] = float('-inf')
+            codebook_probs = torch.softmax(codebook_logits / temperature, dim=-1) # (B, num_tokens_per_codebook)
+            codebook_preds = torch.multinomial(codebook_probs, 1) # (B, 1)
+            all_preds.append(codebook_preds)
+            next_local_transformer_input = self.audio_embeddings[codebook_num](codebook_preds.squeeze(-1)) # (B, 1, 768)
+            next_local_transformer_input = self.local_transformer_in_projection(next_local_transformer_input) # (B, 1, 128)
+            local_transformer_input = torch.cat([local_transformer_input, next_local_transformer_input], dim=1) # (B, T+1, 128)
+        
+        all_preds = torch.cat(all_preds, dim=1).long() # (B, num_codebooks)
+        return all_preds
+            
 
     def sample_codes_from_logits(self, all_code_logits_t, temperature=0.7, topk=80, unfinished_items={}, finished_items={}):
         # all_code_logits_t: (B, num_codebooks * num_tokens_per_codebook), logits at a given timestep
@@ -605,7 +685,6 @@ class T5TTS_Model(ModelPT):
         
         return dummy_cond, dummy_mask, dummy_additional_decoder_input, dummy_additional_dec_mask, attn_prior
 
-
     def process_batch(self, batch, mode="train"):
         context_tensors = self.prepare_context_tensors(batch)
         disable_alignment_loss = False
@@ -657,7 +736,7 @@ class T5TTS_Model(ModelPT):
             dec_input_embedded = audio_codes_embedded
             dec_input_mask = audio_codes_mask
         
-        logits, attn_info = self.forward(
+        logits, attn_info, dec_out = self.forward(
             dec_input_embedded=dec_input_embedded,
             dec_input_mask=dec_input_mask,
             cond=cond,
@@ -666,19 +745,27 @@ class T5TTS_Model(ModelPT):
             multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
         )
         # logits: (B, T', num_codebooks * num_tokens_per_codebook)
+        # dec_out: (B, T', E)
         dec_context_size = context_tensors['dec_context_size']
         logits = logits[:, dec_context_size:, :] # Remove the context audio embeddings from the logits
 
         codebook_loss, loss_mask = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target)
+        codebook_loss_scale = self.cfg.get('codebook_loss_scale', 1.0)
         alignment_loss = None
         if self.cfg.alignment_loss_scale > 0.0 and not disable_alignment_loss:
             text_lens = context_tensors['text_lens']
             ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
             cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
             alignment_loss = self.compute_alignment_loss(cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size)
-            loss = codebook_loss + alignment_loss
+            loss = codebook_loss_scale * codebook_loss + alignment_loss
         else:
-            loss = codebook_loss
+            loss = codebook_loss_scale * codebook_loss
+        
+        if self.cfg.get('use_local_transformer', False):
+            local_transformer_logits = self.compute_local_transformer_logits(dec_out[:,dec_context_size:,:], audio_codes_target)
+            local_transformer_loss, _ = self.compute_loss(local_transformer_logits, audio_codes_target, audio_codes_lens_target)
+            local_transformer_loss_scale = self.cfg.get('local_transformer_loss_scale', 1.0)
+            loss = loss + local_transformer_loss_scale * local_transformer_loss
         
         return {
             'logits': logits,
@@ -849,7 +936,7 @@ class T5TTS_Model(ModelPT):
                         cfg_audio_codes_embedded[batch_size:, :dummy_additional_decoder_input.size(1)] = dummy_additional_decoder_input
                         cfg_audio_codes_mask[batch_size:, :dummy_additional_decoder_input.size(1)] = dummy_addition_dec_mask
 
-                    combined_logits, attn_probs = self.forward(
+                    combined_logits, attn_probs, dec_out = self.forward(
                         dec_input_embedded=cfg_audio_codes_embedded,
                         dec_input_mask=cfg_audio_codes_mask,
                         cond=cfg_cond,
@@ -863,7 +950,7 @@ class T5TTS_Model(ModelPT):
                     all_code_logits = (1 - cfg_scale) * uncond_logits + cfg_scale * cond_logits
                 else:
                     batch_size = audio_codes_embedded.size(0)
-                    all_code_logits, attn_probs = self.forward(
+                    all_code_logits, attn_probs, dec_out = self.forward(
                         dec_input_embedded=_audio_codes_embedded,
                         dec_input_mask=_audio_codes_mask,
                         cond=context_tensors['cond'],

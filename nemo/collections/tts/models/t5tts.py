@@ -408,13 +408,23 @@ class T5TTS_Model(ModelPT):
 
         return all_preds
 
-    def sample_codes_from_local_transformer(self, dec_output, temperature=0.7, topk=80, unfinished_items={}, finished_items={}):
-        # dec_output: (B, 1, E)
+    def sample_codes_from_local_transformer(self, dec_output, temperature=0.7, topk=80, unfinished_items={}, finished_items={}, use_cfg=False, cfg_scale=1.0):
+        # dec_output: (B, E)
+        # import ipdb; ipdb.set_trace()
+        dec_output = dec_output.unsqueeze(1) # (B, 1, E)
         local_transformer_input = self.local_transformer_in_projection(dec_output) # (B, 1, 128)
         all_preds = []
         for codebook_num in range(self.cfg.num_audio_codebooks):
-            local_transformer_output = self.local_transformer(local_transformer_input, None)['output'] # (B, T, 128)
+            _mask = torch.ones( local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device)
+            local_transformer_output = self.local_transformer(local_transformer_input, _mask)['output'] # (B, T, 128)
             codebook_logits = self.local_transformer_out_projections[codebook_num](local_transformer_output[:, -1, :]) # (B, num_audio_tokens_per_codebook)
+            if use_cfg:
+                actual_batch_size = codebook_logits.size(0) // 2
+                conditional_logits = codebook_logits[:actual_batch_size]
+                unconditional_logits = codebook_logits[actual_batch_size:]
+                cfg_logits = cfg_scale * conditional_logits +  (1.0 - cfg_scale) * unconditional_logits
+                codebook_logits[:actual_batch_size] = cfg_logits
+
             for item_idx in unfinished_items:
                 codebook_logits[item_idx, self.audio_eos_id] = float('-inf')
             for item_idx in finished_items:
@@ -427,12 +437,17 @@ class T5TTS_Model(ModelPT):
             codebook_logits_rescored[indices_to_remove] = float('-inf')
             codebook_probs = torch.softmax(codebook_logits / temperature, dim=-1) # (B, num_tokens_per_codebook)
             codebook_preds = torch.multinomial(codebook_probs, 1) # (B, 1)
+            if use_cfg:
+                codebook_preds[actual_batch_size:] = codebook_preds[:actual_batch_size]
             all_preds.append(codebook_preds)
-            next_local_transformer_input = self.audio_embeddings[codebook_num](codebook_preds.squeeze(-1)) # (B, 1, 768)
+            next_local_transformer_input = self.audio_embeddings[codebook_num](codebook_preds.squeeze(-1)).unsqueeze(1) # (B, 1, 128)
             next_local_transformer_input = self.local_transformer_in_projection(next_local_transformer_input) # (B, 1, 128)
             local_transformer_input = torch.cat([local_transformer_input, next_local_transformer_input], dim=1) # (B, T+1, 128)
         
         all_preds = torch.cat(all_preds, dim=1).long() # (B, num_codebooks)
+        if use_cfg:
+            all_preds = all_preds[:actual_batch_size]
+
         return all_preds
             
 
@@ -879,6 +894,7 @@ class T5TTS_Model(ModelPT):
             apply_prior_to_layers=None,
             start_prior_after_n_audio_steps=10,
             compute_all_heads_attn_maps=False,
+            use_local_transformer_for_inference=False,
         ):
         with torch.no_grad():
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
@@ -1040,8 +1056,20 @@ class T5TTS_Model(ModelPT):
                 unifinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)
-                audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
-                all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
+                if self.cfg.get('use_local_transformer', False) and use_local_transformer_for_inference:
+                    audio_codes_next = self.sample_codes_from_local_transformer(
+                        dec_output=dec_out[:,-1,:], 
+                        temperature=temperature, 
+                        topk=topk, 
+                        unfinished_items=unifinished_items, 
+                        finished_items=finished_items,
+                        use_cfg=use_cfg,
+                        cfg_scale=cfg_scale
+                    )
+                    all_codes_next_argmax = audio_codes_next
+                else:
+                    audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
+                    all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
                 
 
                 for item_idx in range(all_codes_next_argmax.size(0)):
@@ -1053,6 +1081,7 @@ class T5TTS_Model(ModelPT):
                             end_indices[item_idx] = idx
 
                 all_predictions.append(audio_codes_next)
+                # import ipdb; ipdb.set_trace()
                 audio_codes_input = torch.cat([audio_codes_input, audio_codes_next.unsqueeze(-1)], dim=-1) # (B, C, T')
                 audio_codes_lens = audio_codes_lens + 1
                 audio_codes_mask = get_mask_from_lengths(audio_codes_lens)

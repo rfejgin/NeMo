@@ -47,6 +47,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import build_lhotse_dataloader, T5TTSLhotseDataset
 from nemo.collections.tts.modules.aligner import AlignmentEncoder
+from nemo.collections.tts.parts.utils.helpers import binarize_attention_parallel
 import random
 
 HAVE_WANDB = True
@@ -667,6 +668,7 @@ class T5TTS_Model(ModelPT):
                 attn_prior = [attn_prior if layer_idx in ctc_prior_layer_ids else None for layer_idx in range(self.cfg.t5_decoder.n_layers) ]
 
         return {
+            'beta_binomial_attn_prior': batch.get('align_prior_matrix', None),
             'cond': cond,
             'cond_mask': cond_mask,
             'attn_prior': attn_prior,
@@ -681,6 +683,40 @@ class T5TTS_Model(ModelPT):
             'context_audio_codes': context_audio_codes,
             'context_audio_codes_lens': context_audio_codes_lens,
         }
+
+    def update_prior_from_hard_aligner(self, aligner_attn_soft, audio_lens, text_lens, attn_prior):
+        # alignment_hard B, audio_timesteps, text_timesteps
+        aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft, text_lens, audio_lens).squeeze(1) # B, audio_timesteps, text_timesteps
+        # for future_timestep in range(self.cfg.get('prior_future_context', 1)):
+        #     aligner_attn_hard[:,:,future_timestep+1:] = aligner_attn_hard[:,:,:-(future_timestep+1)]
+        # for past_timestep in range(self.cfg.get('prior_past_context', 1)):
+        #     aligner_attn_hard[:,:,:-past_timestep-1] = aligner_attn_hard[:,:,past_timestep+1:]
+        
+        # aligner_attn_hard = aligner_attn_hard.float()
+
+        return None, aligner_attn_hard
+        # Update the prior with the hard alignment
+        # if self.model_type == 'multi_encoder_context_tts':
+        #     text_attn_prior = attn_prior[0]
+        # else:
+        #     text_attn_prior = attn_prior
+        
+        # if text_attn_prior is not None:
+        #     if isinstance(text_attn_prior, list):
+        #         # Layer wise prior
+        #         for idx, prior in enumerate(text_attn_prior):
+        #             if prior is not None:
+        #                 text_attn_prior[idx][:,-aligner_attn_hard.size(1):,:] = aligner_attn_hard
+        #     else:
+        #         # Same prior for all layers
+        #         text_attn_prior[:,-aligner_attn_hard.size(1):,:] = aligner_attn_hard
+
+        # if self.model_type == 'multi_encoder_context_tts':
+        #     attn_prior[0] = text_attn_prior
+        # else:
+        #     attn_prior = text_attn_prior
+        
+        # return attn_prior, aligner_attn_hard
 
     def prepare_dummy_cond_for_cfg(self, cond, cond_mask, additional_decoder_input, additional_dec_mask):
         dummy_additional_decoder_input = None
@@ -763,6 +799,28 @@ class T5TTS_Model(ModelPT):
             dec_input_embedded = audio_codes_embedded
             dec_input_mask = audio_codes_mask
         
+        aligner_encoder_loss = None
+        aligner_attn_soft = None
+        aligner_attn_hard = None
+        if self.cfg.get('use_alignment_encoder', False) and not disable_alignment_loss:
+            aligner_prior = None
+            if self.cfg.get('use_prior_for_aligner', False):
+                aligner_prior = context_tensors['beta_binomial_attn_prior']
+            aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
+                queries=audio_codes_embedded.permute(0, 2, 1),
+                keys=context_tensors['text_embedded'].permute(0, 2, 1),
+                mask=~context_tensors['text_mask'].unsqueeze(-1),
+                attn_prior=aligner_prior
+            )
+            
+            _, aligner_attn_hard = self.update_prior_from_hard_aligner(
+                aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
+            )
+            
+            aligner_encoder_loss = self.alignment_encoder_loss(
+                attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
+            )
+
         logits, attn_info, dec_out = self.forward(
             dec_input_embedded=dec_input_embedded,
             dec_input_mask=dec_input_mask,
@@ -796,18 +854,8 @@ class T5TTS_Model(ModelPT):
             local_transformer_loss_scale = self.cfg.get('local_transformer_loss_scale', 1.0)
             loss = loss + local_transformer_loss_scale * local_transformer_loss
         
-        aligner_encoder_loss = None
-        aligner_attn_soft = None
-        if self.cfg.get('use_alignment_encoder', False) and not disable_alignment_loss:
-            aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
-                queries=audio_codes_embedded.permute(0, 2, 1),
-                keys=context_tensors['text_embedded'].permute(0, 2, 1),
-                mask=~context_tensors['text_mask'].unsqueeze(-1),
-            )
-            aligner_encoder_loss = self.alignment_encoder_loss(
-                attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
-            )
-            loss += aligner_encoder_loss
+        if aligner_encoder_loss is not None:
+            loss = loss + aligner_encoder_loss
         
         return {
             'logits': logits,
@@ -827,6 +875,7 @@ class T5TTS_Model(ModelPT):
             'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
             'dec_context_size' : dec_context_size,
             'aligner_attn_soft': aligner_attn_soft,
+            'aligner_attn_hard': aligner_attn_hard,
         }
     
     def training_step(self, batch, batch_idx):
@@ -884,6 +933,14 @@ class T5TTS_Model(ModelPT):
                         audio_codes_lens_target, 
                         text_lens, 
                         prefix=f"val_aligner_encoder_attn_",
+                    )
+                
+                if batch_output['aligner_attn_hard'] is not None:
+                    self.log_attention_probs(
+                        [batch_output['aligner_attn_hard'].unsqueeze(1)], 
+                        audio_codes_lens_target, 
+                        text_lens, 
+                        prefix=f"val_aligner_encoder_attn_hard_",
                     )
 
         local_transformer_loss = batch_output['local_transformer_loss']

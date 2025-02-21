@@ -671,6 +671,7 @@ class T5TTS_Model(ModelPT):
 
         return {
             'beta_binomial_attn_prior': batch.get('align_prior_matrix', None),
+            'text_encoder_out': text_encoder_out,
             'cond': cond,
             'cond_mask': cond_mask,
             'attn_prior': attn_prior,
@@ -814,7 +815,7 @@ class T5TTS_Model(ModelPT):
                 aligner_prior = context_tensors['beta_binomial_attn_prior']
             aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
                 queries=audio_codes_embedded.permute(0, 2, 1),
-                keys=context_tensors['text_embedded'].permute(0, 2, 1),
+                keys=context_tensors['text_encoder_out'].permute(0, 2, 1),
                 mask=~context_tensors['text_mask'].unsqueeze(-1),
                 attn_prior=aligner_prior
             )
@@ -827,6 +828,23 @@ class T5TTS_Model(ModelPT):
             aligner_encoder_loss = self.alignment_encoder_loss(
                 attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
             )
+        
+        if self.cfg.get('obtain_prior_from_cross_attn', False) and mode == "train":
+            pass
+            # with torch.no_grad():
+            #     _dec_out = self.t5_decoder(
+            #         dec_input_embedded,
+            #         dec_input_mask,
+            #         cond=cond,
+            #         cond_mask=cond_mask,
+            #         attn_prior=attn_prior,
+            #         multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
+            #     )
+            #     _attn_info = _dec_out['attn_probabilities']
+            #     ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
+            #     alignment_layer = self.cfg.get('alignment_layer', 6)
+            #     cross_attn_matrix = _attn_info[alignment_layer]['cross_attn_probabilities'][1] # B, audio_timesteps, text_timesteps
+            #     import ipdb; ipdb.set_trace()
 
         logits, attn_info, dec_out = self.forward(
             dec_input_embedded=dec_input_embedded,

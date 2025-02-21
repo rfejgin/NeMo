@@ -221,8 +221,11 @@ class T5TTS_Model(ModelPT):
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
         alignment_loss_scale = cfg.get('alignment_loss_scale', 0.0)
+        alignment_encoder_loss_scale = cfg.get('alignment_encoder_loss_scale', 0.0)
         if alignment_loss_scale > 0.0:
             self.alignment_loss = ForwardSumLoss(loss_scale=alignment_loss_scale)
+        if alignment_encoder_loss_scale > 0.0:
+            self.alignment_encoder_loss = ForwardSumLoss(loss_scale=alignment_encoder_loss_scale)
 
     def freeze_model(self, model):
         for param in model.parameters():
@@ -795,17 +798,16 @@ class T5TTS_Model(ModelPT):
         
         aligner_encoder_loss = None
         aligner_attn_soft = None
-        if self.cfg.get('use_alignment_encoder', False):
+        if self.cfg.get('use_alignment_encoder', False) and not disable_alignment_loss:
             aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
                 queries=audio_codes_embedded.permute(0, 2, 1),
                 keys=context_tensors['text_embedded'].permute(0, 2, 1),
                 mask=~context_tensors['text_mask'].unsqueeze(-1),
             )
-            aligner_encoder_loss = self.alignment_loss(
+            aligner_encoder_loss = self.alignment_encoder_loss(
                 attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
             )
-            loss += self.cfg.get('aligner_encoder_loss_scale', 0.002) * aligner_encoder_loss
-            print("aligner_encoder_loss", aligner_encoder_loss)
+            loss += aligner_encoder_loss
         
         return {
             'logits': logits,

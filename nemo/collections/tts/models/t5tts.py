@@ -183,6 +183,8 @@ class T5TTS_Model(ModelPT):
             self.alignment_encoder = AlignmentEncoder(
                 n_mel_channels=cfg.embedding_dim,
                 n_text_channels=cfg.embedding_dim,
+                dist_type="cosine",
+                temperature=15.0,
             )
 
         codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False)
@@ -685,16 +687,20 @@ class T5TTS_Model(ModelPT):
         }
 
     def update_prior_from_hard_aligner(self, aligner_attn_soft, audio_lens, text_lens, attn_prior):
-        # alignment_hard B, audio_timesteps, text_timesteps
-        aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft, text_lens, audio_lens).squeeze(1) # B, audio_timesteps, text_timesteps
-        # for future_timestep in range(self.cfg.get('prior_future_context', 1)):
-        #     aligner_attn_hard[:,:,future_timestep+1:] = aligner_attn_hard[:,:,:-(future_timestep+1)]
-        # for past_timestep in range(self.cfg.get('prior_past_context', 1)):
-        #     aligner_attn_hard[:,:,:-past_timestep-1] = aligner_attn_hard[:,:,past_timestep+1:]
+        # aligner_attn_soft B, 1, audio_timesteps, text_timesteps
+        # aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft, text_lens, audio_lens).squeeze(1) # B, audio_timesteps, text_timesteps
+        aligner_attn_hard = torch.argmax(aligner_attn_soft.squeeze(1), dim=-1)
+        aligner_attn_hard = torch.nn.functional.one_hot(aligner_attn_hard, num_classes=aligner_attn_soft.size(-1)).float()
+
+        aligner_attn_hard_wider = aligner_attn_hard + 0.0
+        for future_timestep in range(self.cfg.get('prior_future_context', 1)):
+            aligner_attn_hard_wider[:,:,future_timestep+1:] += aligner_attn_hard[:,:,:-(future_timestep+1)]
+        for past_timestep in range(self.cfg.get('prior_past_context', 1)):
+            aligner_attn_hard_wider[:,:,:-past_timestep-1] += aligner_attn_hard[:,:,past_timestep+1:]
         
         # aligner_attn_hard = aligner_attn_hard.float()
 
-        return None, aligner_attn_hard
+        return None, aligner_attn_hard_wider
         # Update the prior with the hard alignment
         # if self.model_type == 'multi_encoder_context_tts':
         #     text_attn_prior = attn_prior[0]
@@ -813,9 +819,10 @@ class T5TTS_Model(ModelPT):
                 attn_prior=aligner_prior
             )
             
-            _, aligner_attn_hard = self.update_prior_from_hard_aligner(
-                aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
-            )
+            with torch.no_grad():
+                _, aligner_attn_hard = self.update_prior_from_hard_aligner(
+                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
+                )
             
             aligner_encoder_loss = self.alignment_encoder_loss(
                 attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input

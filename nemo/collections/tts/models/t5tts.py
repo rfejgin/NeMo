@@ -689,9 +689,16 @@ class T5TTS_Model(ModelPT):
 
     def update_prior_from_hard_aligner(self, aligner_attn_soft, audio_lens, text_lens, attn_prior):
         # aligner_attn_soft B, 1, audio_timesteps, text_timesteps
-        # aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft, text_lens, audio_lens).squeeze(1) # B, audio_timesteps, text_timesteps
-        aligner_attn_hard = torch.argmax(aligner_attn_soft.squeeze(1), dim=-1)
-        aligner_attn_hard = torch.nn.functional.one_hot(aligner_attn_hard, num_classes=aligner_attn_soft.size(-1)).float()
+        if self.cfg.get('binarize_attn_method', 'argmax') == 'nemo_binarize':
+            print("Binaraizing attention using nemo binarize")
+            aligner_attn_soft_repeated = aligner_attn_soft.repeat_interleave(2, dim=2) # B, 1, 2*audio_timesteps, text_timesteps
+            aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft_repeated, text_lens, audio_lens*2).squeeze(1) # B, 2*audio_timesteps, text_timesteps
+            aligner_attn_hard = aligner_attn_hard[:, ::2, :] # B, audio_timesteps, text_timesteps
+            # aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft, text_lens, audio_lens).squeeze(1) # B, audio_timesteps, text_timesteps
+        else:
+            print("Binaraizing attention using argmax")
+            aligner_attn_hard = torch.argmax(aligner_attn_soft.squeeze(1), dim=-1)
+            aligner_attn_hard = torch.nn.functional.one_hot(aligner_attn_hard, num_classes=aligner_attn_soft.size(-1)).float()
 
         aligner_attn_hard_wider = aligner_attn_hard + 0.0
         for future_timestep in range(self.cfg.get('prior_future_context', 1)):
@@ -844,6 +851,7 @@ class T5TTS_Model(ModelPT):
                 _attn_info = _dec_out['attn_probabilities']
                 aligner_attn_soft = _attn_info[alignment_layer]['cross_attn_probabilities'][1] # B, C, audio_timesteps, text_timesteps
                 aligner_attn_soft = aligner_attn_soft.mean(dim=1, keepdim=True) # B, 1, audio_timesteps, text_timesteps
+                aligner_attn_soft = aligner_attn_soft[:, :, context_tensors['dec_context_size']:, :] # Remove the context audio embeddings from the attention scores
                 _, aligner_attn_hard = self.update_prior_from_hard_aligner(
                     aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
                 )

@@ -830,21 +830,23 @@ class T5TTS_Model(ModelPT):
             )
         
         if self.cfg.get('obtain_prior_from_cross_attn', False) and mode == "train":
-            pass
-            # with torch.no_grad():
-            #     _dec_out = self.t5_decoder(
-            #         dec_input_embedded,
-            #         dec_input_mask,
-            #         cond=cond,
-            #         cond_mask=cond_mask,
-            #         attn_prior=attn_prior,
-            #         multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
-            #     )
-            #     _attn_info = _dec_out['attn_probabilities']
-            #     ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
-            #     alignment_layer = self.cfg.get('alignment_layer', 6)
-            #     cross_attn_matrix = _attn_info[alignment_layer]['cross_attn_probabilities'][1] # B, audio_timesteps, text_timesteps
-            #     import ipdb; ipdb.set_trace()
+            with torch.no_grad():
+                alignment_layer = self.cfg.get('alignment_layer', 6)
+                _dec_out = self.t5_decoder(
+                    dec_input_embedded,
+                    dec_input_mask,
+                    cond=cond,
+                    cond_mask=cond_mask,
+                    attn_prior=attn_prior,
+                    multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
+                    max_layer_idx=alignment_layer
+                )
+                _attn_info = _dec_out['attn_probabilities']
+                aligner_attn_soft = _attn_info[alignment_layer]['cross_attn_probabilities'][1] # B, C, audio_timesteps, text_timesteps
+                aligner_attn_soft = aligner_attn_soft.mean(dim=1, keepdim=True) # B, 1, audio_timesteps, text_timesteps
+                _, aligner_attn_hard = self.update_prior_from_hard_aligner(
+                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
+                )
 
         logits, attn_info, dec_out = self.forward(
             dec_input_embedded=dec_input_embedded,

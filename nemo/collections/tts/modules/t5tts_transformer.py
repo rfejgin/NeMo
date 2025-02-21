@@ -673,6 +673,7 @@ class Transformer(torch.nn.Module):
         cond_mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
         attn_prior: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
         multi_encoder_mapping: Optional[List[Optional[int]]] = None,
+        max_layer_idx: Optional[int] = None,
     ) -> Dict[str, Union[torch.Tensor, List]]:
         """
         Args:
@@ -709,6 +710,9 @@ class Transformer(torch.nn.Module):
             out_dict = layer(x, x_mask, _cond, _cond_mask, attn_prior=_attn_prior)
             x = out_dict['output']
             attn_probabilities.append(out_dict['attn_probabilities'])
+
+            if max_layer_idx is not None and idx == max_layer_idx:
+                break
 
         if self.norm_out is not None:
             x = self.norm_out(x)

@@ -829,7 +829,7 @@ class T5TTS_Model(ModelPT):
                 attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
             )
         
-        if self.cfg.get('obtain_prior_from_cross_attn', False) and mode == "train":
+        if self.cfg.get('obtain_prior_from_cross_attn', False) and not disable_alignment_loss:
             with torch.no_grad():
                 alignment_layer = self.cfg.get('alignment_layer', 6)
                 _dec_out = self.t5_decoder(

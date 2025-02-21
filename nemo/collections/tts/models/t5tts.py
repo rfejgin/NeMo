@@ -46,6 +46,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import build_lhotse_dataloader, T5TTSLhotseDataset
+from nemo.collections.tts.modules.aligner import AlignmentEncoder
 import random
 
 HAVE_WANDB = True
@@ -176,6 +177,12 @@ class T5TTS_Model(ModelPT):
             for _ in range(cfg.num_audio_codebooks):
                 local_transformer_out_projections.append(nn.Linear(local_transformer_hidden_dim, cfg.num_audio_tokens_per_codebook))
             self.local_transformer_out_projections = nn.ModuleList(local_transformer_out_projections)
+
+        if cfg.get('use_alignment_encoder', False):
+            self.alignment_encoder = AlignmentEncoder(
+                n_mel_channels=cfg.embedding_dim,
+                n_text_channels=cfg.embedding_dim,
+            )
 
         codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False)
         # del codec discriminator to free memory
@@ -665,6 +672,8 @@ class T5TTS_Model(ModelPT):
             'addtional_decoder_mask': addtional_decoder_mask,
             'dec_context_size': dec_context_size,
             'text': text,
+            'text_embedded': text_embedded,
+            'text_mask': text_mask,
             'text_lens': text_lens,
             'context_audio_codes': context_audio_codes,
             'context_audio_codes_lens': context_audio_codes_lens,
@@ -784,6 +793,20 @@ class T5TTS_Model(ModelPT):
             local_transformer_loss_scale = self.cfg.get('local_transformer_loss_scale', 1.0)
             loss = loss + local_transformer_loss_scale * local_transformer_loss
         
+        aligner_encoder_loss = None
+        aligner_attn_soft = None
+        if self.cfg.get('use_alignment_encoder', False):
+            aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
+                queries=audio_codes_embedded.permute(0, 2, 1),
+                keys=context_tensors['text_embedded'].permute(0, 2, 1),
+                mask=~context_tensors['text_mask'].unsqueeze(-1),
+            )
+            aligner_encoder_loss = self.alignment_loss(
+                attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
+            )
+            loss += self.cfg.get('aligner_encoder_loss_scale', 0.002) * aligner_encoder_loss
+            print("aligner_encoder_loss", aligner_encoder_loss)
+        
         return {
             'logits': logits,
             'attn_info' : attn_info,
@@ -793,6 +816,7 @@ class T5TTS_Model(ModelPT):
             'local_transformer_logits' : local_transformer_logits,
             'loss_mask': loss_mask,
             'alignment_loss': alignment_loss,
+            'aligner_encoder_loss': aligner_encoder_loss,
             'audio_codes_target': audio_codes_target,
             'audio_codes_lens_target': audio_codes_lens_target,
             'text': context_tensors['text'],
@@ -800,6 +824,7 @@ class T5TTS_Model(ModelPT):
             'context_audio_codes': context_tensors['context_audio_codes'],
             'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
             'dec_context_size' : dec_context_size,
+            'aligner_attn_soft': aligner_attn_soft,
         }
     
     def training_step(self, batch, batch_idx):
@@ -826,6 +851,7 @@ class T5TTS_Model(ModelPT):
         loss = batch_output['loss']
         codebook_loss = batch_output['codebook_loss']
         alignment_loss = batch_output['alignment_loss']
+        aligner_encoder_loss = batch_output['aligner_encoder_loss']
         logits = batch_output['logits']
         audio_codes_target = batch_output['audio_codes_target']
         audio_codes_lens_target = batch_output['audio_codes_lens_target']
@@ -836,7 +862,9 @@ class T5TTS_Model(ModelPT):
         dec_context_size = batch_output['dec_context_size']
         if alignment_loss is None:
             alignment_loss = torch.tensor(0.0, device=loss.device)
-        
+        if aligner_encoder_loss is None:
+            aligner_encoder_loss = torch.tensor(0.0, device=loss.device)
+
         if batch_idx == 0 and self.global_rank == 0:
             self.log_train_val_example(logits, audio_codes_target, audio_codes_lens_target, context_audio_codes, context_audio_codes_lens)
             if self.model_type != 'decoder_pretrain_synthesizer' and len(attn_info[self.transcript_decoder_layers[0]]['cross_attn_probabilities']) > 1:
@@ -847,6 +875,14 @@ class T5TTS_Model(ModelPT):
                 for layer_idx in self.transcript_decoder_layers:
                     cross_attention_probs = [ attn_info[layer_idx]['cross_attn_probabilities'][0] ]
                     self.log_attention_probs(cross_attention_probs, audio_codes_lens_target, text_lens, prefix=f"val_layer_{layer_idx}_", dec_context_size=dec_context_size)
+                
+                if batch_output['aligner_attn_soft'] is not None:
+                    self.log_attention_probs(
+                        [batch_output['aligner_attn_soft']], 
+                        audio_codes_lens_target, 
+                        text_lens, 
+                        prefix=f"val_aligner_encoder_attn_",
+                    )
 
         local_transformer_loss = batch_output['local_transformer_loss']
         val_output = {
@@ -854,6 +890,7 @@ class T5TTS_Model(ModelPT):
             'val_codebook_loss': codebook_loss,
             'val_alignment_loss': alignment_loss,
             'val_local_transformer_loss': local_transformer_loss,
+            'val_aligner_encoder_loss': aligner_encoder_loss,
         }
         self.validation_step_outputs.append(val_output)
 
@@ -1162,9 +1199,11 @@ class T5TTS_Model(ModelPT):
         val_loss = collect("val_loss")
         val_codebook_loss = collect("val_codebook_loss")
         val_alignment_loss = collect("val_alignment_loss")
+        val_aligner_encoder_loss = collect("val_aligner_encoder_loss")
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
         self.log("val_codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
         self.log("val_alignment_loss", val_alignment_loss, prog_bar=True, sync_dist=True)
+        self.log("val_aligner_encoder_loss", val_aligner_encoder_loss, prog_bar=True, sync_dist=True)
         if self.cfg.get('use_local_transformer', False):
             val_local_transformer_loss = collect("val_local_transformer_loss")
             self.log("val_local_transformer_loss", val_local_transformer_loss, prog_bar=True, sync_dist=True)

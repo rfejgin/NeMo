@@ -34,12 +34,33 @@ model:
   prior_scaling_factor: 0.5
   prior_end_step: 12000
   prior_scaledown_start_step: 8000
+  train_with_and_without_prior: false # If true, after prior_end_step, we'll train model both with and without prior.
   alignment_loss_scale: 0.0
   embedding_dim: 768
   codecmodel_path: ???
   max_steps: ${max_steps}
 
   sample_rate: ${sample_rate}
+
+  # Alignment encoder parameters, to binarize the prior
+  # This is used for attention-constrained training and inference
+  use_alignment_encoder: false
+  # Below args are only relevant if use_alignment_encoder is true
+  use_prior_for_aligner: true # Whether to use the beta-binomial prior to train the alignment encoder
+  alignment_encoder_loss_scale: 1.0
+  binarize_prior_after_step: 10000 # Switch from beta-binomial prior to binarized prior after this step.
+  binarize_attn_method: "nemo_binarize" # nemo_binarize or argmax.
+  prior_future_context: 2 # Future window of the binarized prior. 
+  prior_past_context: 2 # Past window of the binarized prior.
+  binarize_repeat_audio_factor: 2 # Temporally increase audio timesteps, for nemo_binarize to work better. Increase this for low frame rate codecs
+
+  # Local transformer parameters for autoregressive codebook prediction within a frame
+  use_local_transformer: false
+  # Below args are only relevant if use_local_transformer is true
+  local_transformer_loss_scale: 1.0
+  local_transformer_n_layers: 1
+  local_transformer_n_heads: 1
+  local_transformer_hidden_dim: 256
 
   text_tokenizers:
     english_phoneme:

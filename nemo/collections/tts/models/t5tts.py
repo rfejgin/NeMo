@@ -176,6 +176,7 @@ class T5TTS_Model(ModelPT):
             )
             local_transformer_out_projections = []
             for _ in range(cfg.num_audio_codebooks):
+                # Have a separate projection layer for each codebook, to distinguish between them
                 local_transformer_out_projections.append(nn.Linear(local_transformer_hidden_dim, cfg.num_audio_tokens_per_codebook))
             self.local_transformer_out_projections = nn.ModuleList(local_transformer_out_projections)
 
@@ -547,7 +548,7 @@ class T5TTS_Model(ModelPT):
         if global_step < prior_scaledown_start_step:
             return prior
         elif global_step >= prior_end_step:
-            if self.cfg.get('prior_always_applied', False):
+            if self.cfg.get('train_with_and_without_prior', False):
                 # Added this so that model always knows how to work with and without the prior
                 if random.random() < 0.5:
                     return prior
@@ -675,6 +676,7 @@ class T5TTS_Model(ModelPT):
             'cond': cond,
             'cond_mask': cond_mask,
             'attn_prior': attn_prior,
+            'prior_used': _attn_prior is not None,
             'multi_encoder_mapping': multi_encoder_mapping,
             'additional_decoder_input': additional_decoder_input,
             'addtional_decoder_mask': addtional_decoder_mask,
@@ -687,14 +689,41 @@ class T5TTS_Model(ModelPT):
             'context_audio_codes_lens': context_audio_codes_lens,
         }
 
-    def update_prior_from_hard_aligner(self, aligner_attn_soft, audio_lens, text_lens, attn_prior):
+    def replace_beta_binomial_prior_with_binarized(self, attn_prior, aligner_attn_hard):
+        # aligner_attn_hard B, audio_timesteps, text_timesteps
+        if self.model_type == 'multi_encoder_context_tts':
+            text_attn_prior = attn_prior[0]
+        else:
+            text_attn_prior = attn_prior
+        
+        assert text_attn_prior is not None, "Prior is None"
+
+        if isinstance(text_attn_prior, list):
+            # Layer wise prior
+            prior_updated = False
+            for idx, prior in enumerate(text_attn_prior):
+                if prior is not None:
+                    text_attn_prior[idx][:,-aligner_attn_hard.size(1):,:] = aligner_attn_hard
+                    prior_updated = True
+            assert prior_updated, "Did not find any prior to update"
+        else:
+            # Same prior for all layers
+            text_attn_prior[:,-aligner_attn_hard.size(1):,:] = aligner_attn_hard
+        
+        if self.model_type == 'multi_encoder_context_tts':
+            attn_prior[0] = text_attn_prior
+        else:
+            attn_prior = text_attn_prior
+
+        return attn_prior
+
+    def get_binarized_prior_matrix(self, aligner_attn_soft, audio_lens, text_lens):
         # aligner_attn_soft B, 1, audio_timesteps, text_timesteps
         if self.cfg.get('binarize_attn_method', 'argmax') == 'nemo_binarize':
-            print("Binaraizing attention using nemo binarize")
-            aligner_attn_soft_repeated = aligner_attn_soft.repeat_interleave(2, dim=2) # B, 1, 2*audio_timesteps, text_timesteps
-            aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft_repeated, text_lens, audio_lens*2).squeeze(1) # B, 2*audio_timesteps, text_timesteps
+            binarize_repeat_audio_factor = self.cfg.get('binarize_repeat_audio_factor', 2)
+            aligner_attn_soft_repeated = aligner_attn_soft.repeat_interleave(binarize_repeat_audio_factor, dim=2) # B, 1, 2*audio_timesteps, text_timesteps
+            aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft_repeated, text_lens, audio_lens*binarize_repeat_audio_factor).squeeze(1) # B, 2*audio_timesteps, text_timesteps
             aligner_attn_hard = aligner_attn_hard[:, ::2, :] # B, audio_timesteps, text_timesteps
-            # aligner_attn_hard = binarize_attention_parallel(aligner_attn_soft, text_lens, audio_lens).squeeze(1) # B, audio_timesteps, text_timesteps
         else:
             print("Binaraizing attention using argmax")
             aligner_attn_hard = torch.argmax(aligner_attn_soft.squeeze(1), dim=-1)
@@ -706,31 +735,7 @@ class T5TTS_Model(ModelPT):
         for past_timestep in range(self.cfg.get('prior_past_context', 1)):
             aligner_attn_hard_wider[:,:,:-past_timestep-1] += aligner_attn_hard[:,:,past_timestep+1:]
         
-        # aligner_attn_hard = aligner_attn_hard.float()
-
-        return None, aligner_attn_hard_wider
-        # Update the prior with the hard alignment
-        # if self.model_type == 'multi_encoder_context_tts':
-        #     text_attn_prior = attn_prior[0]
-        # else:
-        #     text_attn_prior = attn_prior
-        
-        # if text_attn_prior is not None:
-        #     if isinstance(text_attn_prior, list):
-        #         # Layer wise prior
-        #         for idx, prior in enumerate(text_attn_prior):
-        #             if prior is not None:
-        #                 text_attn_prior[idx][:,-aligner_attn_hard.size(1):,:] = aligner_attn_hard
-        #     else:
-        #         # Same prior for all layers
-        #         text_attn_prior[:,-aligner_attn_hard.size(1):,:] = aligner_attn_hard
-
-        # if self.model_type == 'multi_encoder_context_tts':
-        #     attn_prior[0] = text_attn_prior
-        # else:
-        #     attn_prior = text_attn_prior
-        
-        # return attn_prior, aligner_attn_hard
+        return aligner_attn_hard_wider
 
     def prepare_dummy_cond_for_cfg(self, cond, cond_mask, additional_decoder_input, additional_dec_mask):
         dummy_additional_decoder_input = None
@@ -827,35 +832,19 @@ class T5TTS_Model(ModelPT):
                 attn_prior=aligner_prior
             )
             
-            with torch.no_grad():
-                _, aligner_attn_hard = self.update_prior_from_hard_aligner(
-                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
-                )
-            
             aligner_encoder_loss = self.alignment_encoder_loss(
                 attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
             )
-        
-        if self.cfg.get('obtain_prior_from_cross_attn', False) and not disable_alignment_loss:
+
             with torch.no_grad():
-                alignment_layer = self.cfg.get('alignment_layer', 6)
-                _dec_out = self.t5_decoder(
-                    dec_input_embedded,
-                    dec_input_mask,
-                    cond=cond,
-                    cond_mask=cond_mask,
-                    attn_prior=attn_prior,
-                    multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
-                    max_layer_idx=alignment_layer
-                )
-                _attn_info = _dec_out['attn_probabilities']
-                aligner_attn_soft = _attn_info[alignment_layer]['cross_attn_probabilities'][1] # B, C, audio_timesteps, text_timesteps
-                aligner_attn_soft = aligner_attn_soft.mean(dim=1, keepdim=True) # B, 1, audio_timesteps, text_timesteps
-                aligner_attn_soft = aligner_attn_soft[:, :, context_tensors['dec_context_size']:, :] # Remove the context audio embeddings from the attention scores
-                _, aligner_attn_hard = self.update_prior_from_hard_aligner(
-                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens'], attn_prior
+                aligner_attn_hard = self.get_binarized_prior_matrix(
+                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens']
                 )
 
+                if (self.global_step > self.cfg.get('binarize_prior_after_step', 0)) and context_tensors['prior_used']:
+                    print("Updating Prior")
+                    attn_prior = self.replace_beta_binomial_prior_with_binarized(attn_prior, aligner_attn_hard)
+                
         logits, attn_info, dec_out = self.forward(
             dec_input_embedded=dec_input_embedded,
             dec_input_mask=dec_input_mask,

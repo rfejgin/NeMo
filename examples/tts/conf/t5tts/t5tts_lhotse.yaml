@@ -52,6 +52,8 @@ model:
   binarize_attn_method: "nemo_binarize" # nemo_binarize or argmax.
   prior_future_context: 2 # Future window of the binarized prior. 
   prior_past_context: 2 # Past window of the binarized prior.
+  prior_future_decay: 0.8 # Decay factor for future context
+  prior_past_decay: 0.5 # Decay factor for past context
   binarize_repeat_audio_factor: 2 # Temporally increase audio timesteps, for nemo_binarize to work better. Increase this for low frame rate codecs
 
   # Local transformer parameters for autoregressive codebook prediction within a frame

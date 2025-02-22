@@ -729,11 +729,17 @@ class T5TTS_Model(ModelPT):
             aligner_attn_hard = torch.argmax(aligner_attn_soft.squeeze(1), dim=-1)
             aligner_attn_hard = torch.nn.functional.one_hot(aligner_attn_hard, num_classes=aligner_attn_soft.size(-1)).float()
 
+        prior_future_decay = self.cfg.get('prior_future_decay', 1.0)
+        prior_past_decay = self.cfg.get('prior_past_decay', 1.0)
         aligner_attn_hard_wider = aligner_attn_hard + 0.0
+        
         for future_timestep in range(self.cfg.get('prior_future_context', 1)):
-            aligner_attn_hard_wider[:,:,future_timestep+1:] += aligner_attn_hard[:,:,:-(future_timestep+1)]
+            decay_factor = prior_future_decay ** (future_timestep + 1)
+            aligner_attn_hard_wider[:,:,future_timestep+1:] += decay_factor * aligner_attn_hard[:,:,:-(future_timestep+1)]
+        
         for past_timestep in range(self.cfg.get('prior_past_context', 1)):
-            aligner_attn_hard_wider[:,:,:-past_timestep-1] += aligner_attn_hard[:,:,past_timestep+1:]
+            decay_factor = prior_past_decay ** (past_timestep + 1)
+            aligner_attn_hard_wider[:,:,:-past_timestep-1] += decay_factor * aligner_attn_hard[:,:,past_timestep+1:]
         
         return aligner_attn_hard_wider
 

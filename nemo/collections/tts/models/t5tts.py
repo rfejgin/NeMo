@@ -731,7 +731,8 @@ class T5TTS_Model(ModelPT):
 
         prior_future_decay = self.cfg.get('prior_future_decay', 1.0)
         prior_past_decay = self.cfg.get('prior_past_decay', 1.0)
-        aligner_attn_hard_wider = aligner_attn_hard + 0.0
+        binarized_prior_epsilon = self.cfg.get('binarized_prior_epsilon', 0.0)
+        aligner_attn_hard_wider = aligner_attn_hard + binarized_prior_epsilon
         
         for future_timestep in range(self.cfg.get('prior_future_context', 1)):
             decay_factor = prior_future_decay ** (future_timestep + 1)
@@ -740,6 +741,8 @@ class T5TTS_Model(ModelPT):
         for past_timestep in range(self.cfg.get('prior_past_context', 1)):
             decay_factor = prior_past_decay ** (past_timestep + 1)
             aligner_attn_hard_wider[:,:,:-past_timestep-1] += decay_factor * aligner_attn_hard[:,:,past_timestep+1:]
+        
+        aligner_attn_hard_wider = torch.clamp(aligner_attn_hard_wider, 0.0, 1.0)
         
         return aligner_attn_hard_wider
 

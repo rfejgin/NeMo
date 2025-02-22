@@ -55,6 +55,7 @@ model:
   prior_future_decay: 0.8 # Decay factor for future context
   prior_past_decay: 0.5 # Decay factor for past context
   binarize_repeat_audio_factor: 2 # Temporally increase audio timesteps, for nemo_binarize to work better. Increase this for low frame rate codecs
+  binarized_prior_epsilon: 0.0
 
   # Local transformer parameters for autoregressive codebook prediction within a frame
   use_local_transformer: false

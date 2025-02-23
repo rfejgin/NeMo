@@ -788,6 +788,8 @@ class T5TTS_Model(ModelPT):
         audio_codes_input = audio_codes[:, :, :-1] # B, C, T'
         audio_codes_target = audio_codes[:, :, 1:]
         audio_codes_lens_input = audio_codes_lens_target = audio_codes_lens - 1
+        audio_codes_embedded_all = self.embed_audio_tokens(audio_codes) # (B, T, E) # Computing this to be use in the alignment encoder
+        audio_codes_embedded = audio_codes_embedded_all[:, :-1, :] # (B, T', E) Input to the decoder
 
         audio_codes_mask = get_mask_from_lengths(audio_codes_lens_input)
         use_cfg = (self.cfg.get('cfg_unconditional_prob', 0.0) > 0.0) and (mode == "train") and (context_tensors['cond'] is not None)
@@ -817,9 +819,8 @@ class T5TTS_Model(ModelPT):
                 dec_dropout_mask = torch.rand((1,1,audio_codes_input.size(2)), device=audio_codes_input.device) > self.cfg.decoder_input_dropout_prob
                 # timestep_mask is True for timesteps to be kept
                 audio_codes_input = audio_codes_input * dec_dropout_mask + random_audio_tokens * (~dec_dropout_mask)
+                audio_codes_embedded = self.embed_audio_tokens(audio_codes_input) # (B, T', E)
 
-        
-        audio_codes_embedded = self.embed_audio_tokens(audio_codes_input) # (B, T', E)
         if context_tensors['additional_decoder_input'] is not None:
             dec_input_embedded = torch.cat([additional_decoder_input, audio_codes_embedded], dim=1)
             dec_input_mask = torch.cat([additional_decoder_mask, audio_codes_mask], dim=1)
@@ -834,9 +835,10 @@ class T5TTS_Model(ModelPT):
             aligner_prior = None
             if self.cfg.get('use_prior_for_aligner', False):
                 aligner_prior = context_tensors['beta_binomial_attn_prior']
+            # Passing target audio embeddings to the alignment encoder
             aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
-                queries=audio_codes_embedded.permute(0, 2, 1),
-                keys=context_tensors['text_encoder_out'].permute(0, 2, 1),
+                queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1), # B, E, T'
+                keys=context_tensors['text_encoder_out'].permute(0, 2, 1), # B, E, T
                 mask=~context_tensors['text_mask'].unsqueeze(-1),
                 attn_prior=aligner_prior
             )

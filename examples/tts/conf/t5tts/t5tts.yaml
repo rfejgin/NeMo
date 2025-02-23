@@ -30,7 +30,7 @@ model:
   prior_scaling_factor: 0.5
   prior_end_step: 12000
   prior_scaledown_start_step: 8000 # Prior will always be on before this step.
-  train_with_and_without_prior: false # If true, after prior_end_step, we'll train model both with and without prior.
+  indefinite_prior_prob: 0.0 # If > 0, then prior will be applied after prior_end_step with this probability.
   alignment_loss_scale: 0.0
   embedding_dim: 768
   codecmodel_path: ???

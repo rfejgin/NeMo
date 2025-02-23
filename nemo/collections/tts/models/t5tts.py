@@ -549,13 +549,13 @@ class T5TTS_Model(ModelPT):
         if global_step < prior_scaledown_start_step:
             return prior
         elif global_step >= prior_end_step:
-            if self.cfg.get('train_with_and_without_prior', False):
-                # Added this so that model always knows how to work with and without the prior
-                if random.random() < 0.5:
-                    return prior
-                else:
-                    return None
-            return None
+            indefinite_prior_prob = self.cfg.get('indefinite_prior_prob', 0.0)
+            if random.random() < indefinite_prior_prob:
+                print("Using Prior")
+                return prior
+            else:
+                print("Not using Prior")
+                return None
         else:
             with torch.no_grad():
                 # Interpolate between all ones and the prior

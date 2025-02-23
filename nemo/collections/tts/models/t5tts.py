@@ -355,6 +355,7 @@ class T5TTS_Model(ModelPT):
         all_code_logits = []
         for codebook_num in range(audio_codes_target.size(1)):
             # Using a separate projection layer for each codebook (to distinguish between them)
+            # Checked the time - this loop is not taking much time (compared to the local transformer forward pass)
             codebook_logits = self.local_transformer_out_projections[codebook_num](local_transformer_output[:, codebook_num, :]) # (B*T', num_audio_tokens_per_codebook)
             all_code_logits.append(codebook_logits)
         all_code_logits = torch.cat(all_code_logits, dim=1) # (B*T', num_codebooks * num_audio_tokens_per_codebook)

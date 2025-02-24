@@ -227,7 +227,8 @@ class Attention(torch.nn.Module):
 
         # attn_prior or square mask or vanilla attention
         if attn_prior is not None:
-            eps = 1e-8
+            # eps = 1e-8
+            eps = 0.0
             attn_prior = attn_prior[:, :T]  # trim for inference
             attn_prior = torch.log(attn_prior + eps)
             attn_prior = attn_prior[:, None].repeat(1, self.n_heads, 1, 1)

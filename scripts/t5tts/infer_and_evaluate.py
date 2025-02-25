@@ -14,47 +14,8 @@ import scipy.stats as stats
 import copy
 import shutil
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-import subprocess
-import inspect
-
-"""
-Sample command line:
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output 
- # with cfg
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/experiments/decoder_context/hparams.yaml --checkpoint_file /data/experiments/decoder_context/T5TTS--val_loss\=5.0848-epoch\=28.ckpt   --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo --datasets vctk --out_dir ./inference_output/with_cfg --use_cfg --cfg_scale 1.8 --batch_size 12
-
- # Paarth's decoder context checkpoint
- python scripts/t5tts/infer_and_evaluate.py --hparams_file /data/t5_new_cp/configs/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_hparams.yaml --checkpoint_file /data/t5_new_cp/checkpoints/unnormalizedLalign005_decoderContext_textcontext_kernel3Fixed_epoch_21.ckpt  --datasets vctk --out_dir ./inference_output_paarth  --codecmodel_path /data/codec_checkpoints/codecs-no-eliz/AudioCodec_21Hz_no_eliz.nemo
- 
-# with copy from cs-oci and with CFG
-  CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 6 --out_dir test_all_libridev_batch6_with_cfg/ --exp_names decoder_context_large,decoder_context
-
-  
-
-# with copy from cs-oci and no CFG
- CUDA_VISIBLE_DEVICES=1 python scripts/t5tts/infer_and_evaluate.py --batch_size 6 --out_dir /datap/misc/decoder_context_no_cfg
-
-# debug
-CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 12 --exp_names decoder_context --out_dir debug --debug
-
- 
-# ... 
-CUDA_VISIBLE_DEVICES=0 python scripts/t5tts/infer_and_evaluate.py --use_cfg --cfg_scale 1.8 --batch_size 6 --out_dir test_all_libridev_batch6_with_cfg/ --exp_names yt_plus_18k_single_stage_no_CTC_no_prior_with_transcript,yt_plus_18k_single_stage_no_CTC_no_prior_no_yt_transcript,yt_weight0.25_plus_18k_single_stage_decoder_context_kernel1_fixes
-
-"""
-
-
-
-def write_audio_tensor(t: torch.Tensor, lengths: torch.Tensor, prefix: str, audio_dir: str, sample_rate: int, item_index: int):
-    for idx in range(t.size(0)):
-        audio_np = t[idx].float().detach().cpu().numpy()
-        audio_np = audio_np[:lengths[idx]]
-        audio_path = os.path.join(audio_dir, f"{prefix}_{item_index}.wav")
-        sf.write(audio_path, audio_np,sample_rate)
-        item_index += 1
-    return item_index
-        
 from PIL import Image
+import subprocess
 
 def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
     metrics = {}
@@ -66,9 +27,6 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
         print(f"{key}: {mean} +/- {confidence_interval}")
         metrics[key] = "{:.4f} +/- {:.4f}".format(mean, confidence_interval)
     return metrics
-
-def int_list_to_str(l):
-    return "_".join([str(d) for d in l])
 
 def run_inference(
         hparams_file, 
@@ -87,7 +45,8 @@ def run_inference(
         attention_prior_lookahead_window=10,
         estimate_alignment_from_layers=None,
         apply_prior_to_layers=None,
-        start_prior_after_n_audio_steps=10
+        start_prior_after_n_audio_steps=10,
+        confidence_level=0.95
     ):
     # import ipdb; ipdb.set_trace()
     model_cfg = OmegaConf.load(hparams_file).cfg
@@ -135,7 +94,8 @@ def run_inference(
         for repeat_idx in range(num_repeats):
             eval_dir = os.path.join(out_dir, "{}_{}".format(checkpoint_name, dataset))
             audio_dir = os.path.join(eval_dir, "audio")
-            os.makedirs(audio_dir, exist_ok=True) 
+            pred_audio_dir = os.path.join(audio_dir, f"repeat_{repeat_idx}")
+            os.makedirs(pred_audio_dir, exist_ok=True)
             language = dataset_meta_info[dataset].get('whisper_language', 'en')
             dataset_meta_for_dl = copy.deepcopy(dataset_meta_info[dataset])
             for key in ["whisper_language", "load_cached_codes_if_available"]:
@@ -218,7 +178,7 @@ def run_inference(
 
                     predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
                     predicted_audio_np = predicted_audio_np[:predicted_audio_lens[idx]]
-                    audio_path = os.path.join(audio_dir, f"predicted_audio_{item_idx}.wav")
+                    audio_path = os.path.join(pred_audio_dir, f"predicted_audio_{item_idx}.wav")
                     sf.write(audio_path, predicted_audio_np, model.cfg.sample_rate)
                     context_audio_path = manifest_records[item_idx].get('context_audio_filepath', None)
                     target_audio_path = manifest_records[item_idx].get('audio_filepath', None)
@@ -235,7 +195,7 @@ def run_inference(
             metrics, filewise_metrics = evaluate_generated_audio.evaluate(
                 dataset_meta[dataset]['manifest_path'],
                 dataset_meta[dataset]['audio_dir'],
-                audio_dir,
+                pred_audio_dir,
                 language=language,
             )
             metrics_n_repeated.append(metrics)
@@ -257,7 +217,7 @@ def run_inference(
                        'ssim_pred_gt_avg_alternate', 'ssim_pred_context_avg_alternate', 'ssim_gt_context_avg_alternate',
                        'cer_gt_audio_cumulative', 'wer_gt_audio_cumulative'
                        ]
-        metrics_mean_ci = compute_mean_and_confidence_interval(metrics_n_repeated, metric_keys)
+        metrics_mean_ci = compute_mean_and_confidence_interval(metrics_n_repeated, metric_keys, confidence=confidence_level)
         all_experiment_csv_with_ci = os.path.join(out_dir, "all_experiment_metrics_with_ci.csv")
         if not os.path.exists(all_experiment_csv_with_ci):
             with open(all_experiment_csv_with_ci, "w") as f:
@@ -312,7 +272,7 @@ def main():
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_repeats', type=int, default=1)
-
+    parser.add_argument('--confidence_level', type=float, default=0.95)
     args = parser.parse_args()
 
     estimate_alignment_from_layers = None
@@ -346,7 +306,8 @@ def main():
                 attention_prior_lookahead_window=args.attention_prior_lookahead_window,
                 estimate_alignment_from_layers=estimate_alignment_from_layers,
                 apply_prior_to_layers=apply_prior_to_layers,
-                start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps
+                start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
+                confidence_level=args.confidence_level,
             )
         return
     else:
@@ -412,7 +373,8 @@ def main():
                 attention_prior_lookahead_window=args.attention_prior_lookahead_window,
                 estimate_alignment_from_layers=estimate_alignment_from_layers,
                 apply_prior_to_layers=apply_prior_to_layers,
-                start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps
+                start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
+                confidence_level=args.confidence_level,
             )
             
 

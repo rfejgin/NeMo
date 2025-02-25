@@ -28,7 +28,12 @@ dataset_meta_info = {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/riva_subjective__wizwiki_lindy_rodney_normalized_t5_tts_riva_eval_set_normalized_no_escapes.json',
         'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
         'feature_dir' : '/',
-    },    
+    },
+    'riva_subjective_pre_post': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/riva_subjective__wizwiki_lindy_rodney_normalized_t5_tts_riva_eval_set_normalized_no_escapes_pre_post_text.json',
+        'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
+        'feature_dir' : '/',
+    },      
     'riva_val_audio_context': {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/RivattsEnglishLindyRodney21fps_val_nemo_codec21_bw_6.0_phoneme_tts.json',
         'audio_dir' : "/datap/misc/Datasets/riva/RivattsEnglish",
@@ -48,7 +53,12 @@ dataset_meta_info = {
         'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset_large.json',
         'audio_dir' : '/datap/misc/Datasets/LibriTTS',
         'feature_dir' : '/datap/misc/Datasets/LibriTTS',
-    },    
+    },
+    'libri_dev_clean_eval_large_pre_post': {
+        'manifest_path' : '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/dev_clean_withContextAudioPaths_withTargetCodes_evalset_large_pre_post_text.json',
+        'audio_dir' : '/datap/misc/Datasets/LibriTTS',
+        'feature_dir' : '/datap/misc/Datasets/LibriTTS',
+    },     
     'vctk': {
         'manifest_path' : '/home/pneekhara/2023/SimpleT5NeMo/manifests/smallvctk__phoneme__nemo_audio_21fps_8codebooks_2kcodes_v2bWithWavLM_simplet5_withcontextaudiopaths.json',
         'audio_dir' : '/datap/misc/Datasets/VCTK-Corpus',

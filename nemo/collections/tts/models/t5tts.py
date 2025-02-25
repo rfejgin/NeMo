@@ -378,6 +378,19 @@ class T5TTS_Model(ModelPT):
             all_preds.append(codebook_preds)
         all_preds = torch.cat(all_preds, dim=1).long() # (B, num_codebooks)
         return all_preds
+    
+    def get_uncond_frame_probability(self, selected_codes, uncond_logits):
+        uncond_probs = []
+        for idx in range(self.cfg.num_audio_codebooks):
+            si = idx * self.cfg.num_audio_tokens_per_codebook
+            ei = si + self.cfg.num_audio_tokens_per_codebook
+            codebook_logits = uncond_logits[:, si:ei] # (B, num_audio_tokens_per_codebook)        
+            codebook_probs = torch.softmax(codebook_logits, dim=-1) # (B, num_audio_tokens_per_codebook)
+            uncond_probs.append(torch.gather(codebook_probs, dim=1, index=selected_codes[:,idx:idx+1]))
+        uncond_probs_per_codebook = torch.stack(uncond_probs).squeeze(2).permute(1,0)
+        # calculate frame probability under the (incorrect) assumption that codebook probabilities are indepentent of each other
+        uncond_prob = torch.prod(uncond_probs_per_codebook, dim=1)
+        return uncond_probs_per_codebook
 
     def log_attention_probs(self, attention_prob_matrix, audio_codes_lens, text_lens, prefix="", dec_context_size=0):
         # attention_prob_matrix List of (B, C, audio_timesteps, text_timesteps)
@@ -783,6 +796,7 @@ class T5TTS_Model(ModelPT):
             apply_prior_to_layers=None,
             start_prior_after_n_audio_steps=10,
             compute_all_heads_attn_maps=False,
+            return_uncond_probs_all_timestemps=False
         ):
         with torch.no_grad():
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
@@ -807,6 +821,7 @@ class T5TTS_Model(ModelPT):
             
             cross_attention_scores_all_timesteps = []
             all_heads_cross_attn_scores_all_timesteps = []
+            uncond_probs_per_codebook_all_timesteps = []
             _attn_prior = None
             unfinished_texts = {}
             finished_texts_counter = {}
@@ -946,8 +961,8 @@ class T5TTS_Model(ModelPT):
                 all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)
                 audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
-                
-
+                uncond_probs_per_codebook = self.get_uncond_frame_probability(selected_codes=audio_codes_next, uncond_logits=uncond_logits[:,-1,:])
+                uncond_probs_per_codebook_all_timesteps.append(uncond_probs_per_codebook)
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
                         pred_token = all_codes_next_argmax[item_idx][0].item()
@@ -995,6 +1010,10 @@ class T5TTS_Model(ModelPT):
                         headwise_cross_attention_maps.append(item_all_head_cross_attn_maps)
 
                 return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attention_maps, headwise_cross_attention_maps
+            elif return_uncond_probs_all_timestemps:
+                uncond_probs_per_codebook_all_timesteps = torch.stack(uncond_probs_per_codebook_all_timesteps, dim=1) # B, T', num_codebooks
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, uncond_probs_per_codebook_all_timesteps
+
             else:
                 # For backward compatibility
                 return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens

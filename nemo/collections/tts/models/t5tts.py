@@ -49,6 +49,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import build_lhotse
 from nemo.collections.tts.modules.aligner import AlignmentEncoder
 from nemo.collections.tts.parts.utils.helpers import binarize_attention_parallel
 import random
+import time
 
 HAVE_WANDB = True
 try:
@@ -426,6 +427,7 @@ class T5TTS_Model(ModelPT):
     def sample_codes_from_local_transformer(self, dec_output, temperature=0.7, topk=80, unfinished_items={}, finished_items={}, use_cfg=False, cfg_scale=1.0):
         # dec_output: (B, E)
         # import ipdb; ipdb.set_trace()
+        self.local_transformer.reset_cache(use_cache=True)
         dec_output = dec_output.unsqueeze(1) # (B, 1, E)
         local_transformer_input = self.local_transformer_in_projection(dec_output) # (B, 1, 128)
         all_preds = []
@@ -1119,6 +1121,7 @@ class T5TTS_Model(ModelPT):
             use_local_transformer_for_inference=False,
         ):
         with torch.no_grad():
+            start_time = time.time()
             self.t5_decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
             
             context_tensors = self.prepare_context_tensors(batch)
@@ -1146,7 +1149,10 @@ class T5TTS_Model(ModelPT):
             finished_texts_counter = {}
             attended_timestep_counter = [{} for _ in range(text.size(0))]
             last_attended_timesteps = [[1 for _ in range(text.size(0))]] # Maintain a list of attended timesteps as we predict audio for each batch item
+            time_to_first_prediction = 0.0
             for idx in range(max_decoder_steps):
+                if idx == 1:
+                    time_to_first_prediction = time.time() - start_time
                 if idx % 20 == 0:
                     print(f"Decoding timestep {idx}")
                 audio_codes_embedded = self.embed_audio_tokens(audio_codes_input)
@@ -1272,22 +1278,35 @@ class T5TTS_Model(ModelPT):
                     print("All ends reached")
                     break
             
+            tts_generation_time = time.time() - start_time
+            tts_generation_time_per_frame = tts_generation_time / len(all_predictions)
+
             predicted_codes = torch.stack(all_predictions, dim=-1) # (B, num_codebooks, T')
             predicted_lens = [ end_indices.get(idx, max_decoder_steps) for idx in range(text.size(0))] # Ensure that the codec is atleast of length 4
             predicted_codes_lens = torch.tensor(predicted_lens, device=text.device).long()
 
             predicted_audio, predicted_audio_lens = self.codes_to_audio(predicted_codes, predicted_codes_lens)
-            
+            end_time = time.time()
+            total_audio_duration_generated = (predicted_audio_lens.max().item() * predicted_audio_lens.shape[0])/self._codec_model.sample_rate
+            rtf = total_audio_duration_generated / (end_time - start_time)
+            rtf_metrics = {
+                'rtf': rtf,
+                'time_to_first_prediction': time_to_first_prediction,
+                'tts_generation_time': tts_generation_time,
+                'max_frames_generated': len(all_predictions),
+                'tts_generation_time_per_frame': tts_generation_time_per_frame,
+                'batch_size': text.size(0),
+            }
             torch.cuda.empty_cache()
             if return_cross_attn_probs:
                 cross_attention_maps, headwise_cross_attention_maps = self.get_inference_attention_plots(
                     cross_attention_scores_all_timesteps, all_heads_cross_attn_scores_all_timesteps,
                     context_tensors['text_lens'], predicted_codes_lens, text.size(0), compute_all_heads_attn_maps
                 )
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, cross_attention_maps, headwise_cross_attention_maps
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics, cross_attention_maps, headwise_cross_attention_maps
             else:
                 # For backward compatibility
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics
 
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
@@ -1296,7 +1315,7 @@ class T5TTS_Model(ModelPT):
             topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
             cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens = self.infer_batch(
+            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, _ = self.infer_batch(
                 batch,
                 max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
                 temperature=temperature,
@@ -1527,7 +1546,7 @@ class T5TTS_ModelInference(T5TTS_Model):
             topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
             cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens = self.infer_batch(
+            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, _ = self.infer_batch(
                 batch,
                 max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
                 temperature=temperature,

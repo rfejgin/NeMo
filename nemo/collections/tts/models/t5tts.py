@@ -839,22 +839,31 @@ class T5TTS_Model(ModelPT):
             if self.cfg.get('use_prior_for_aligner', False):
                 aligner_prior = context_tensors['beta_binomial_attn_prior']
             # Passing target audio embeddings to the alignment encoder
-            aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
-                queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1), # B, E, T'
-                keys=context_tensors['text_encoder_out'].permute(0, 2, 1), # B, E, T
-                mask=~context_tensors['text_mask'].unsqueeze(-1),
-                attn_prior=aligner_prior
-            )
-            
-            aligner_encoder_loss = self.alignment_encoder_loss(
-                attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
-            )
+            if self.global_step < self.cfg.get('aligner_encoder_train_steps', float('inf')):
+                aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
+                    queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1), # B, E, T'
+                    keys=context_tensors['text_encoder_out'].permute(0, 2, 1), # B, E, T
+                    mask=~context_tensors['text_mask'].unsqueeze(-1),
+                    attn_prior=aligner_prior
+                )
+                
+                aligner_encoder_loss = self.alignment_encoder_loss(
+                    attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
+                )
+            else:
+                with torch.no_grad():
+                    # Just get the attention matrix without computing the loss or gradients
+                    aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
+                        queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1), # B, E, T'
+                        keys=context_tensors['text_encoder_out'].permute(0, 2, 1), # B, E, T
+                        mask=~context_tensors['text_mask'].unsqueeze(-1),
+                        attn_prior=aligner_prior
+                    )
 
             with torch.no_grad():
                 aligner_attn_hard = self.get_binarized_prior_matrix(
                     aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens']
                 )
-
                 if (self.global_step > self.cfg.get('binarize_prior_after_step', 0)) and context_tensors['prior_used']:
                     print("Updating Prior")
                     attn_prior = self.replace_beta_binomial_prior_with_binarized(attn_prior, aligner_attn_hard)

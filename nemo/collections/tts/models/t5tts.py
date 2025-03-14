@@ -1639,48 +1639,66 @@ class T5TTS_ModelInference(T5TTS_Model):
                     json.dump(item_metrics, f)
 
 
-class T5TTS_Discriminator(nn.Module):
+class T5TTS_Discriminator(ModelPT):
     # A model that classifies whether frames of audio codes are real or fake
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         # Convert to Hydra 1.0 compatible DictConfig
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         cfg = model_utils.maybe_update_config_version(cfg)
+        self.cfg = cfg
+
+        # CLS: special token that we will use to output the real/fake classification
         # 5 because in T5TTS the last 4 are already reserved for BOS, EOS, BOS_CONTEXT, EOS_CONTEXT
         self.audio_cls_id = cfg.num_audio_tokens_per_codebook - 5 # TODO: make this cleaner?
 
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices    
+        self._tb_logger = None
 
-        self.audio_embeddings = torch.load("audio_embeddings.pt")
-        d_model = 256
+        super().__init__(cfg=cfg, trainer=trainer)
+
+        # create and initialize the audio embeddings from pretrained T5TTS model; for now we will not freeze them
+        # but it's worth experimenting with this
+        audio_embeddings_pretrained = torch.load("audio_embeddings.pt", weights_only=False)
+        self.audio_embeddings = self.create_audio_embeddings(self.cfg, audio_embeddings_pretrained, add_cls_token=True)
+        
+        d_audio_embeddings = self.audio_embeddings[0].weight.shape[1]
+        d_model = self.cfg.decoder.d_model
+
+        # Projection from audio codebook space to transformer dimensions
+        self.audio_emb_to_model_proj = nn.Linear(d_audio_embeddings, d_model)
+
         # decoder-only transformer
-        self.decoder = t5tts_transformer.Transformer(n_layers=4,
-                                                     d_model=d_model,
-                                                     d_ffn=4*d_model,
-                                                     sa_n_heads=4,
-                                                     kernel_size=1,
-                                                     p_dropout=0.1,
-                                                     p_dropout_out=0.1,
-                                                     has_xattn=False,
-                                                     xa_d_memory=None,
-                                                     xa_n_heads=None,
-                                                     is_causal=True,
-                                                     apply_norm_out=True,
-                                                     max_length_causal_mask=30, # 13 codebooks + 1 CLS = 14, roughtly double it for margin
-                                                     use_learnable_pos_emb=True,
-                                                     prior_eps=1e-8)
-                                                     
+        self.decoder = t5tts_transformer.Transformer(**self.cfg.decoder)                                                     
 
         # Project the decoder output to a single logit for real/fake classification
         self.final_proj = nn.Linear(d_model, 1)
+
         # Binary cross entropy loss
         self.bce_loss = nn.BCEWithLogitsLoss(reduction='mean')
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         state_dict = super().state_dict(destination, prefix, keep_vars)
         return state_dict
+
+    def create_audio_embeddings(self, cfg, pretrained_audio_embeddings=None, add_cls_token=False):
+        audio_embeddings = []
+        if add_cls_token:
+            # This is somewhat wasteful as we only need one embedding for the CLS token (can optimize if needed)
+            audio_embeddings.append(nn.Embedding(cfg.num_audio_tokens_per_codebook, cfg.embedding_dim))
+        for idx in range(cfg.num_audio_codebooks):
+            audio_embeddings.append(nn.Embedding(cfg.num_audio_tokens_per_codebook, cfg.embedding_dim))
+            if pretrained_audio_embeddings is not None:
+                with torch.no_grad():
+                    audio_embeddings[idx].weight.copy_(pretrained_audio_embeddings[idx].weight)
+        return nn.ModuleList(audio_embeddings)
+            
     
+    @classmethod
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
+        return []
+
     @property
     def tb_logger(self):
         if self._tb_logger is None:
@@ -1695,15 +1713,22 @@ class T5TTS_Discriminator(nn.Module):
         return self._tb_logger
         
     def training_step(self, batch, batch_idx):
-        disc_outputs = self.process_batch_discriminator(batch)
-        self.log('train_loss', disc_outputs['loss'], prog_bar=True, sync_dist=True)
-        return disc_outputs['loss']
+        outputs = self.process_batch(batch)
+        self.log('train_loss', outputs['loss'], prog_bar=True, sync_dist=True)
+        return outputs['loss']
     
     def embed_audio_codes(self, audio_codes):
-        # Embed the audio codes
-        # TODO verify shapes
-        audio_codes_embedded = self.audio_embeddings(audio_codes)
-        return audio_codes_embedded
+        # audio_codes: (B, C)
+        # Unlike the T5TTS model, we don't average the embeddings across the codebooks
+        audio_embedding_list = None
+        for c in range(audio_codes.size(1)):
+            embedding = self.audio_embeddings[c](audio_codes[:, c])
+            if audio_embedding_list is None:
+                audio_embedding_list = [embedding]
+            else:
+                audio_embedding_list.append(embedding)
+        audio_embedding = torch.stack(audio_embedding_list, dim=1)        
+        return audio_embedding # (B, C, E)
 
     def process_batch(self, batch, mode="train"):
         audio_codes = batch['audio_codes'] # B, C
@@ -1714,116 +1739,45 @@ class T5TTS_Discriminator(nn.Module):
             # set all labels to 1 (real) just for debugging
             labels = torch.ones_like(audio_codes, device=self.device)
 
-        # TODO prepend with CLS token (or do it in data loader?)
-        # ?? autogenerated next line
-        audio_codes_real = torch.cat([torch.ones_like(audio_codes[:, :1, :], device=self.device) * self.audio_cls_id, audio_codes_real], dim=1) # TODO verify
+        # Prepend with CLS token
+        audio_codes = torch.cat([torch.ones_like(audio_codes[:, 0:1], device=self.device) * self.audio_cls_id, audio_codes], dim=1)
+        audio_codes_lens += 1
 
         # Embed the audio codes
-        audio_codes_embedded = self.embed_audio_codes(audio_codes) # B, C, E?
-
+        audio_codes_embedded = self.embed_audio_codes(audio_codes) # B, C, E
         audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
 
-        dec_input_embedded = audio_codes_embedded
-        dec_input_mask = audio_codes_mask
-        
-        aligner_encoder_loss = None
-        aligner_attn_soft = None
-        aligner_attn_hard = None
-        if self.cfg.get('use_alignment_encoder', False) and not disable_alignment_loss:
-            aligner_prior = None
-            if self.cfg.get('use_prior_for_aligner', False):
-                aligner_prior = context_tensors['beta_binomial_attn_prior']
-            # Passing target audio embeddings to the alignment encoder
-            if self.global_step < self.cfg.get('aligner_encoder_train_steps', float('inf')):
-                aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
-                    queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1), # B, E, T'
-                    keys=context_tensors['text_encoder_out'].permute(0, 2, 1), # B, E, T
-                    mask=~context_tensors['text_mask'].unsqueeze(-1),
-                    attn_prior=aligner_prior
-                )
-                
-                aligner_encoder_loss = self.alignment_encoder_loss(
-                    attn_logprob=aligner_attn_logprobs, in_lens=context_tensors['text_lens'], out_lens=audio_codes_lens_input
-                )
-            else:
-                with torch.no_grad():
-                    # Just get the attention matrix without computing the loss or gradients
-                    aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
-                        queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1), # B, E, T'
-                        keys=context_tensors['text_encoder_out'].permute(0, 2, 1), # B, E, T
-                        mask=~context_tensors['text_mask'].unsqueeze(-1),
-                        attn_prior=aligner_prior
-                    )
-
-            with torch.no_grad():
-                aligner_attn_hard = self.get_binarized_prior_matrix(
-                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens']
-                )
-                if (self.global_step > self.cfg.get('binarize_prior_after_step', 0)) and context_tensors['prior_used']:
-                    print("Updating Prior")
-                    attn_prior = self.replace_beta_binomial_prior_with_binarized(attn_prior, aligner_attn_hard)
-                
+        # Project to transformer dimensions
+        audio_codes_projected = self.audio_emb_to_model_proj(audio_codes_embedded) # B, C, E'
+       
+        # Run the decoder
         logits, attn_info, dec_out = self.forward(
-            dec_input_embedded=dec_input_embedded,
-            dec_input_mask=dec_input_mask,
-            cond=cond,
-            cond_mask=cond_mask,
-            attn_prior=attn_prior,
-            multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
-        )
-        # logits: (B, T', num_codebooks * num_tokens_per_codebook)
-        # dec_out: (B, T', E)
-        dec_context_size = context_tensors['dec_context_size']
-        logits = logits[:, dec_context_size:, :] # Remove the context audio embeddings from the logits
+            dec_input_embedded=audio_codes_projected,
+            dec_input_mask=audio_codes_mask,
+        ) # logits: B, C, 1
 
-        codebook_loss, loss_mask = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target)
-        codebook_loss_scale = self.cfg.get('codebook_loss_scale', 1.0)
-        alignment_loss = None
-        if self.cfg.alignment_loss_scale > 0.0 and not disable_alignment_loss:
-            text_lens = context_tensors['text_lens']
-            ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
-            cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
-            alignment_loss = self.compute_alignment_loss(cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size)
-            loss = codebook_loss_scale * codebook_loss + alignment_loss
-        else:
-            loss = codebook_loss_scale * codebook_loss
-        
-        local_transformer_loss = None
-        local_transformer_logits = None
-        if self.cfg.get('use_local_transformer', False):
-            local_transformer_logits = self.compute_local_transformer_logits(dec_out[:,dec_context_size:,:], audio_codes_target)
-            local_transformer_loss, _ = self.compute_loss(local_transformer_logits, audio_codes_target, audio_codes_lens_target)
-            local_transformer_loss_scale = self.cfg.get('local_transformer_loss_scale', 1.0)
-            loss = loss + local_transformer_loss_scale * local_transformer_loss
-        
-        if aligner_encoder_loss is not None:
-            loss = loss + aligner_encoder_loss
-        
+        # Compute loss only on CLS token
+        cls_logits = logits[:, 0].squeeze(1) # B
+        loss = self.bce_loss(cls_logits, labels)
+
         return {
             'logits': logits,
-            'attn_info' : attn_info,
             'loss': loss,
-            'codebook_loss': codebook_loss,
-            'local_transformer_loss' : local_transformer_loss,
-            'local_transformer_logits' : local_transformer_logits,
-            'loss_mask': loss_mask,
-            'alignment_loss': alignment_loss,
-            'aligner_encoder_loss': aligner_encoder_loss,
-            'audio_codes_target': audio_codes_target,
-            'audio_codes_lens_target': audio_codes_lens_target,
-            'text': context_tensors['text'],
-            'text_lens': context_tensors['text_lens'],
-            'context_audio_codes': context_tensors['context_audio_codes'],
-            'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
-            'dec_context_size' : dec_context_size,
-            'aligner_attn_soft': aligner_attn_soft,
-            'aligner_attn_hard': aligner_attn_hard,
         }
+    
+    def forward(self, dec_input_embedded, dec_input_mask):
+        decoder_out = self.decoder(
+            dec_input_embedded,
+            dec_input_mask,
+        )
+        attn_probabilities = decoder_out['attn_probabilities']
+        all_code_logits = self.final_proj(decoder_out['output']) # (B, )
+        return all_code_logits, attn_probabilities, decoder_out['output']    
 
     def validation_step(self, batch, batch_idx):
-        dpo_outputs = self.process_batch_dpo(batch)
+        outputs = self.process_batch(batch)
         
-        val_loss = dpo_outputs['loss']
+        val_loss = outputs['loss']
         
         self.validation_step_outputs.append({
             'val_loss': val_loss,
@@ -1848,91 +1802,27 @@ class T5TTS_Discriminator(nn.Module):
     def get_dataset(self, cfg, dataset_type):
         dataset = instantiate(
             cfg.dataset,
-            bos_id=self.bos_id,
-            eos_id=self.eos_id,
-            audio_bos_id=self.audio_bos_id,
-            audio_eos_id=self.audio_eos_id,
-            context_audio_bos_id=self.context_audio_bos_id,
-            context_audio_eos_id=self.context_audio_eos_id,
-            num_audio_codebooks=self.cfg.num_audio_codebooks,
-            codec_model_downsample_factor=self.cfg.codec_model_downsample_factor,
-            prior_scaling_factor=self.cfg.prior_scaling_factor,
-            load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
-            dataset_type=dataset_type, # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
-            use_text_conditioning_tokenizer=self.cfg.use_text_conditioning_encoder,
-            pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
-            context_duration_min=self.cfg.context_duration_min,
-            context_duration_max=self.cfg.context_duration_max,
         )
-        dataset.load_16khz_audio = self.model_type == 'single_encoder_sv_tts'
-        dataset.tokenizer_config = self.cfg.text_tokenizers # This will be used in worker_init_fn for instantiating tokenizer
         return dataset
 
     def _setup_train_dataloader(self, cfg):
-        if cfg.get('use_lhotse', False):
-            dataset = T5TTSLhotseDataset(
-                sample_rate=self.cfg.sample_rate,
-                bos_id=self.bos_id,
-                eos_id=self.eos_id,
-                audio_bos_id=self.audio_bos_id,
-                audio_eos_id=self.audio_eos_id,
-                codec_model_downsample_factor=self.cfg.codec_model_downsample_factor,
-                prior_scaling_factor=self.cfg.prior_scaling_factor,
-                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
-                dataset_type='train', # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
-                use_text_conditioning_tokenizer=self.cfg.use_text_conditioning_encoder,
-                pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
-                context_duration_min=self.cfg.context_duration_min,
-                context_duration_max=self.cfg.context_duration_max,
-            )
-            dataset.load_16khz_audio = self.model_type == 'single_encoder_sv_tts'
-            # dataset.text_tokenizer = self.tokenizer # This will be used in worker_init_fn for instantiating tokenizer
-            dataset.text_tokenizer, dataset.text_conditioning_tokenizer = self._setup_tokenizers(self.cfg)
-            # ToDo: Add support for the dataset.text_conditioning_tokenizer on lhotse dataset
-            data_loader = build_lhotse_dataloader(dataset, cfg.dataset)
-        else:
-            dataset = self.get_dataset(cfg, dataset_type='train')
-            sampler = dataset.get_sampler(cfg.dataloader_params.batch_size, world_size=self.trainer.world_size)
-            persistent_workers = True
-            if cfg.dataloader_params.num_workers == 0:
-                persistent_workers = False
-                # For num workers > 0 tokenizer will be assigned in worker_init_fn (since it is not picklable)
-                dataset.text_tokenizer, dataset.text_conditioning_tokenizer = self._setup_tokenizers(self.cfg)
-            data_loader = torch.utils.data.DataLoader(
-                dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params, worker_init_fn=worker_init_fn, persistent_workers=persistent_workers
-            )
+        dataset = self.get_dataset(cfg, dataset_type='train')
+        sampler = dataset.get_sampler(cfg.dataloader_params.batch_size, world_size=self.trainer.world_size)
+        persistent_workers = True
+        if cfg.dataloader_params.num_workers == 0:
+            persistent_workers = False
+            # For num workers > 0 tokenizer will be assigned in worker_init_fn (since it is not picklable)
+        data_loader = torch.utils.data.DataLoader(
+            dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params, worker_init_fn=worker_init_fn_simple, persistent_workers=persistent_workers
+        )
         return data_loader
 
     def _setup_test_dataloader(self, cfg):
-        if cfg.get('use_lhotse', False):
-            dataset = T5TTSLhotseDataset(
-                sample_rate=self.cfg.sample_rate,
-                bos_id=self.bos_id,
-                eos_id=self.eos_id,
-                audio_bos_id=self.audio_bos_id,
-                audio_eos_id=self.audio_eos_id,
-                codec_model_downsample_factor=self.cfg.codec_model_downsample_factor,
-                prior_scaling_factor=self.cfg.prior_scaling_factor,
-                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
-                dataset_type='test', # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
-                use_text_conditioning_tokenizer=self.cfg.use_text_conditioning_encoder,
-                pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
-                context_duration_min=self.cfg.context_duration_min,
-                context_duration_max=self.cfg.context_duration_max,
-            )
-            dataset.load_16khz_audio = self.model_type == 'single_encoder_sv_tts'
-            # dataset.text_tokenizer = self.tokenizer # This will be used in worker_init_fn for instantiating tokenizer
-            dataset.text_tokenizer, dataset.text_conditioning_tokenizer = self._setup_tokenizers(self.cfg)
-            data_loader = build_lhotse_dataloader(dataset, cfg.dataset, is_eval=True)
-        else:
-            dataset = self.get_dataset(cfg, dataset_type='test')
-            persistent_workers = True
-            if cfg.dataloader_params.num_workers == 0:
-                persistent_workers = False
-                # For num workers > 0 tokenizer will be assigned in worker_init_fn (since it is not picklable)
-                dataset.text_tokenizer, dataset.text_conditioning_tokenizer = self._setup_tokenizers(self.cfg, mode='test')
-
-            data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params, worker_init_fn=worker_init_fn, persistent_workers=persistent_workers)
+        dataset = self.get_dataset(cfg, dataset_type='test')
+        persistent_workers = True
+        if cfg.dataloader_params.num_workers == 0:
+            persistent_workers = False
+            data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params, worker_init_fn=worker_init_fn_simple, persistent_workers=persistent_workers)
         return data_loader
 
     def setup_training_data(self, cfg):
@@ -2177,3 +2067,7 @@ class T5TTS_ModelDPO(T5TTS_Model):
             self.log("val_alignment_loss", val_alignment_loss, prog_bar=True, sync_dist=True)
         self.validation_step_outputs.clear()
         
+def worker_init_fn_simple(worker_id):
+    # For mp.set_start_method("spawn", force=True)
+    # The dataset class should be picklable, so we initialize non-picklable objects here
+    logging.info(f"Worker {worker_id} initializing...")

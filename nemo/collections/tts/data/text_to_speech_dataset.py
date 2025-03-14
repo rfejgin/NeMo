@@ -711,8 +711,8 @@ class T5TTSDatasetDPO(T5TTSDataset):
 
 
 class AudioCodesRealFakeDataset(Dataset):
-    def __init__(self, manifest_real, manifest_fake, max_samples=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, manifest_real=None, manifest_fake=None, max_samples=None):
+        super().__init__()
         # The codes are very compressed so for a reasonable number of samples, the memory footprint is manageable and we can just load them all into memory
         self.codes_real = self.load_manifest_codes(manifest_real, max_samples=max_samples) # total_frames, C
         self.codes_fake = self.load_manifest_codes(manifest_fake, max_samples=max_samples) # total_frames, C
@@ -721,6 +721,8 @@ class AudioCodesRealFakeDataset(Dataset):
     def __len__(self):
         return min(len(self.codes_real), len(self.codes_fake))
 
+    def get_sampler(self, batch_size: int, world_size: int) -> Optional[torch.utils.data.Sampler]:
+        return None
     def load_manifest_codes(self, manifest_path, max_samples=None):
         records = read_manifest(manifest_path)
         codes = []

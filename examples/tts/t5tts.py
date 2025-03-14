@@ -15,7 +15,7 @@
 import pytorch_lightning as pl
 from omegaconf import OmegaConf, open_dict
 
-from nemo.collections.tts.models import T5TTS_Model, T5TTS_ModelInference, T5TTS_ModelDPO
+from nemo.collections.tts.models import T5TTS_Model, T5TTS_ModelInference, T5TTS_ModelDPO, T5TTS_Discriminator
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -37,6 +37,9 @@ def main(cfg):
         with open_dict(model_cfg):
             model_cfg.reference_model_ckpt_path = cfg.init_from_ptl_ckpt
         model = T5TTS_ModelDPO(cfg=model_cfg, trainer=trainer)
+    elif cfg.get('mode', 'train_disc') == 'train_disc':
+        model_cfg = cfg.model
+        model = T5TTS_Discriminator(cfg=model_cfg, trainer=trainer)         
     elif cfg.get('mode', 'train') == 'test':
         model = T5TTS_ModelInference(cfg=cfg.model, trainer=trainer)
     else:
@@ -44,7 +47,7 @@ def main(cfg):
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
     
-    if cfg.get('mode', 'train') in ['train', 'dpo_train']:
+    if cfg.get('mode', 'train') in ['train', 'dpo_train', 'train_disc']:
         trainer.fit(model)
     elif cfg.get('mode', 'train') == 'test':
         trainer.test(model)

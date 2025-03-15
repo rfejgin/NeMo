@@ -2,7 +2,7 @@ name: T5TTS_Discriminator
 
 max_epochs: ???
 # Adjust batch size based on GPU memory
-batch_size: 16
+batch_size: 512
 # When doing weighted sampling with multiple manifests, this defines how many training steps are in an epoch.
 # If null, then weighted sampling is disabled.
 weighted_sampling_steps_per_epoch: null
@@ -37,9 +37,10 @@ model:
   train_ds:
     dataset:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.AudioCodesRealFakeDataset
-      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer.json
-      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest.json
-      max_samples: 1000
+      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer_train.json
+      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest_train.json
+      dataset_type: null
+      #max_samples: 1000
     dataloader_params:
       batch_size: ${batch_size}
       num_workers: 0      
@@ -47,9 +48,10 @@ model:
   validation_ds:
     dataset:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.AudioCodesRealFakeDataset
-      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer.json
-      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest.json
-      max_samples: 1000
+      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer_val.json
+      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest_val.json
+      dataset_type: null
+      #max_samples: 1000
 
     dataloader_params:
       batch_size: ${batch_size}
@@ -102,12 +104,12 @@ exp_manager:
   wandb_logger_kwargs:
     name: null
     project: null
-  create_checkpoint_callback: true 
+  create_checkpoint_callback: false #true 
   checkpoint_callback_params:
     monitor: val_loss
     mode: min
     save_top_k: 5
     save_best_model: true
     always_save_nemo: true
-  resume_if_exists: true
+  resume_if_exists: false #true
   resume_ignore_no_checkpoint: true

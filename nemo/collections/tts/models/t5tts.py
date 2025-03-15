@@ -1800,8 +1800,10 @@ class T5TTS_Discriminator(ModelPT):
 
 
     def get_dataset(self, cfg, dataset_type):
+        dataset_config = copy.deepcopy(cfg.dataset)
+        dataset_config.dataset_type = dataset_type
         dataset = instantiate(
-            cfg.dataset,
+            dataset_config
         )
         return dataset
 

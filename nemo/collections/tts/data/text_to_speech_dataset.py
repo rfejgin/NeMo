@@ -711,11 +711,17 @@ class T5TTSDatasetDPO(T5TTSDataset):
 
 
 class AudioCodesRealFakeDataset(Dataset):
-    def __init__(self, manifest_real=None, manifest_fake=None, max_samples=None):
+    def __init__(self, manifest_real=None, manifest_fake=None, max_samples=None, dataset_type='train'):
         super().__init__()
         # The codes are very compressed so for a reasonable number of samples, the memory footprint is manageable and we can just load them all into memory
+        print(f"Loading real codes from manifest: {manifest_real}")
         self.codes_real = self.load_manifest_codes(manifest_real, max_samples=max_samples) # total_frames, C
+        print(f"Loading fake codes from manifest: {manifest_fake}")
         self.codes_fake = self.load_manifest_codes(manifest_fake, max_samples=max_samples) # total_frames, C
+        if dataset_type == 'train':
+            self.reshuffle = True
+        else:
+            self.reshuffle = False
 
     
     def __len__(self):
@@ -740,11 +746,18 @@ class AudioCodesRealFakeDataset(Dataset):
     
     def __getitem__(self, index):
         # get a random index, separate per subset so that we get a different real/fake pair each time
-        real_index = torch.randint(0, len(self.codes_real), (1,))
-        fake_index = torch.randint(0, len(self.codes_fake), (1,))
-        # get codes
-        real_codes = self.codes_real[real_index]
-        fake_codes = self.codes_fake[fake_index]
+        if self.reshuffle:
+            # Note: we are ignoring the index! 
+            # not good for validation set where we might want to disable shuffling
+            real_index = torch.randint(0, len(self.codes_real), (1,))
+            fake_index = torch.randint(0, len(self.codes_fake), (1,))
+            real_codes = self.codes_real[real_index]
+            fake_codes = self.codes_fake[fake_index]
+        else:
+            real_index = index
+            fake_index = index
+            real_codes = self.codes_real[real_index:real_index+1]
+            fake_codes = self.codes_fake[fake_index:fake_index+1]
         
         # Concat real and fake and label them
         codes = torch.cat([real_codes, fake_codes], dim=0)

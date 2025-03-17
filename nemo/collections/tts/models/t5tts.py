@@ -1661,7 +1661,8 @@ class T5TTS_Discriminator(ModelPT):
         # create and initialize the audio embeddings from pretrained T5TTS model; for now we will not freeze them
         # but it's worth experimenting with this
         audio_embeddings_pretrained = torch.load("audio_embeddings.pt", weights_only=False)
-        self.audio_embeddings = self.create_audio_embeddings(self.cfg, audio_embeddings_pretrained, add_cls_token=True)
+        freeze_audio_embeddings = self.cfg.get('freeze_audio_embeddings', False)
+        self.audio_embeddings = self.create_audio_embeddings(self.cfg, audio_embeddings_pretrained, add_cls_token=True, freeze_audio_embeddings=freeze_audio_embeddings)
         
         d_audio_embeddings = self.audio_embeddings[0].weight.shape[1]
         d_model = self.cfg.decoder.d_model
@@ -1682,7 +1683,7 @@ class T5TTS_Discriminator(ModelPT):
         state_dict = super().state_dict(destination, prefix, keep_vars)
         return state_dict
 
-    def create_audio_embeddings(self, cfg, pretrained_audio_embeddings=None, add_cls_token=False):
+    def create_audio_embeddings(self, cfg, pretrained_audio_embeddings=None, add_cls_token=False, freeze_audio_embeddings=False):
         audio_embeddings = []
         if add_cls_token:
             # This is somewhat wasteful as we only need one embedding for the CLS token (can optimize if needed)
@@ -1692,6 +1693,8 @@ class T5TTS_Discriminator(ModelPT):
             if pretrained_audio_embeddings is not None:
                 with torch.no_grad():
                     audio_embeddings[idx].weight.copy_(pretrained_audio_embeddings[idx].weight)
+                    if freeze_audio_embeddings:
+                        audio_embeddings[idx].weight.requires_grad = False
         return nn.ModuleList(audio_embeddings)
             
     
@@ -1760,6 +1763,8 @@ class T5TTS_Discriminator(ModelPT):
         cls_logits = logits[:, 0].squeeze(1) # B
         loss = self.bce_loss(cls_logits, labels)
 
+
+
         return {
             'logits': logits,
             'loss': loss,
@@ -1776,11 +1781,18 @@ class T5TTS_Discriminator(ModelPT):
 
     def validation_step(self, batch, batch_idx):
         outputs = self.process_batch(batch)
+
+        # Compute accuracy
+        with torch.no_grad():
+            cls_logits = outputs['logits'][:, 0].squeeze(1) # B
+            preds = torch.sigmoid(cls_logits) > 0.5
+            val_acc = (preds == batch['labels']).float().mean()
         
         val_loss = outputs['loss']
         
         self.validation_step_outputs.append({
             'val_loss': val_loss,
+            'val_acc': val_acc,
         })
     
     def on_validation_epoch_end(self):
@@ -1796,6 +1808,8 @@ class T5TTS_Discriminator(ModelPT):
 
         val_loss = collect("val_loss")
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
+        val_acc = collect("val_acc")
+        self.log("val_acc", val_acc, prog_bar=True, sync_dist=True)
         self.validation_step_outputs.clear()
 
 

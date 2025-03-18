@@ -1665,15 +1665,15 @@ class T5TTS_Discriminator(ModelPT):
         self.audio_embeddings = self.create_audio_embeddings(self.cfg, audio_embeddings_pretrained, add_cls_token=True, freeze_audio_embeddings=freeze_audio_embeddings)
         
         d_audio_embeddings = self.audio_embeddings[0].weight.shape[1]
-        d_model = self.cfg.decoder.d_model
+        d_model = self.cfg.encoder.d_model
 
         # Projection from audio codebook space to transformer dimensions
         self.audio_emb_to_model_proj = nn.Linear(d_audio_embeddings, d_model)
 
-        # decoder-only transformer
-        self.decoder = t5tts_transformer.Transformer(**self.cfg.decoder)                                                     
+        # encoder-only transformer
+        self.encoder = t5tts_transformer.Transformer(**self.cfg.encoder)                                                     
 
-        # Project the decoder output to a single logit for real/fake classification
+        # Project the encoder output to a single logit for real/fake classification
         self.final_proj = nn.Linear(d_model, 1)
 
         # Binary cross entropy loss
@@ -1750,10 +1750,10 @@ class T5TTS_Discriminator(ModelPT):
         audio_codes_embedded = self.embed_audio_codes(audio_codes) # B, C, E
         audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
 
-        # Project to transformer dimensions
+        # Project to transformer dimension
         audio_codes_projected = self.audio_emb_to_model_proj(audio_codes_embedded) # B, C, E'
        
-        # Run the decoder
+        # Run the encoder
         logits, attn_info, dec_out = self.forward(
             dec_input_embedded=audio_codes_projected,
             dec_input_mask=audio_codes_mask,
@@ -1771,22 +1771,21 @@ class T5TTS_Discriminator(ModelPT):
         }
     
     def forward(self, dec_input_embedded, dec_input_mask):
-        decoder_out = self.decoder(
+        encoder_out = self.encoder(
             dec_input_embedded,
             dec_input_mask,
         )
-        attn_probabilities = decoder_out['attn_probabilities']
-        all_code_logits = self.final_proj(decoder_out['output']) # (B, )
-        return all_code_logits, attn_probabilities, decoder_out['output']    
+        attn_probabilities = encoder_out['attn_probabilities']
+        all_code_logits = self.final_proj(encoder_out['output']) # (B, )
+        return all_code_logits, attn_probabilities, encoder_out['output']    
 
     def validation_step(self, batch, batch_idx):
         outputs = self.process_batch(batch)
 
         # Compute accuracy
-        with torch.no_grad():
-            cls_logits = outputs['logits'][:, 0].squeeze(1) # B
-            preds = torch.sigmoid(cls_logits) > 0.5
-            val_acc = (preds == batch['labels']).float().mean()
+        cls_logits = outputs['logits'][:, 0].squeeze(1) # B
+        preds = torch.sigmoid(cls_logits) > 0.5
+        val_acc = (preds == batch['labels']).float().mean()
         
         val_loss = outputs['loss']
         

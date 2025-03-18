@@ -16,48 +16,15 @@ val_ds_meta: ???
 sample_rate: 22050
 
 model:
-  model_type: "multi_encoder_context_tts" # single_encoder_sv_tts, multi_encoder_context_tts, decoder_context_tts or decoder_pretrain_synthesizer
-  use_text_conditioning_encoder: false # If true, distilbert will be used to encode context_text if provided.
-  transcript_decoder_layers: [3,4,5,6,7] # ONLY used in multi_encoder_context_tts, Transcript goes to these layer ids, context goes to the rest. In single_encoder_sv_tts, all layers are used for transcript.
-  context_decoder_layers: [8,9] # ONLY used in multi_encoder_context_tts
-  context_duration_min: 3.0
-  context_duration_max: 8.0
-  speaker_emb_dim: 192 # Only used for single_encoder_sv_tts, ignored otherwise
-  num_audio_codebooks: 8
+  num_audio_codebooks: 13
   num_audio_tokens_per_codebook: 2048 # Keep atleast 2 extra for eos/bos ids
   codec_model_downsample_factor: 1764
-  load_cached_codes_if_available: true
   embedding_dim: 768
   max_epochs: ${max_epochs}
   steps_per_epoch: ${weighted_sampling_steps_per_epoch}
-
   sample_rate: ${sample_rate}
 
-
-  train_ds:
-    dataset:
-      _target_: nemo.collections.tts.data.text_to_speech_dataset.AudioCodesRealFakeDataset
-      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer_train.json
-      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest_train.json
-      dataset_type: null
-      #max_samples: 1000
-    dataloader_params:
-      batch_size: ${batch_size}
-      num_workers: 0      
-
-  validation_ds:
-    dataset:
-      _target_: nemo.collections.tts.data.text_to_speech_dataset.AudioCodesRealFakeDataset
-      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer_val.json
-      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest_val.json
-      dataset_type: null
-      #max_samples: 1000
-
-    dataloader_params:
-      batch_size: ${batch_size}
-      num_workers: 0
-  
-  decoder:
+  encoder:
     n_layers: 4
     d_model: 256
     d_ffn: 1024
@@ -70,7 +37,29 @@ model:
     apply_norm_out: true
     max_length_causal_mask: 32
     use_learnable_pos_emb: true
-  
+
+  train_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.text_to_speech_dataset.AudioCodesRealFakeDataset
+      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer_train.json
+      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest_train.json
+      dataset_type: null
+      #max_samples: 1000
+    dataloader_params:
+      batch_size: ${batch_size}
+      num_workers: 0             
+
+  validation_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.text_to_speech_dataset.AudioCodesRealFakeDataset
+      manifest_real: /datap/misc/speechllm_codecdatasets/manifests/t5_exp/libri100__for_classifer_val.json
+      manifest_fake: /home/rfejgin/manifests_t5_exp/libri100_generated_12.5FPS_manifest_val.json
+      dataset_type: null
+      #max_samples: 1000
+
+    dataloader_params:
+      batch_size: ${batch_size}
+      num_workers: 0
 
   optim:
     _target_: torch.optim.Adam

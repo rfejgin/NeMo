@@ -1128,6 +1128,10 @@ class T5TTS_Model(ModelPT):
             start_prior_after_n_audio_steps=10,
             compute_all_heads_attn_maps=False,
             use_local_transformer_for_inference=False,
+            discriminator=None,
+            resample_and_rank=False,
+            resample_and_rank_count=10,
+            resample_threshold=None,
         ):
         with torch.no_grad():
             start_time = time.time()
@@ -1153,12 +1157,15 @@ class T5TTS_Model(ModelPT):
             
             cross_attention_scores_all_timesteps = []
             all_heads_cross_attn_scores_all_timesteps = []
+            disc_preds_all_timesteps = []
+            disc_preds_raw_all_timesteps = []
             _attn_prior = None
             unfinished_texts = {}
             finished_texts_counter = {}
             attended_timestep_counter = [{} for _ in range(text.size(0))]
             last_attended_timesteps = [[1 for _ in range(text.size(0))]] # Maintain a list of attended timesteps as we predict audio for each batch item
             time_to_first_prediction = 0.0
+            resample_counter = 0
             for idx in range(max_decoder_steps):
                 if idx == 1:
                     time_to_first_prediction = time.time() - start_time
@@ -1268,7 +1275,44 @@ class T5TTS_Model(ModelPT):
                 else:
                     audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
                     all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
-
+                if discriminator is not None:
+                    if resample_and_rank:
+                        audio_code_candidates = [audio_codes_next]
+                        for _ in range(resample_and_rank_count-1):
+                            audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unifinished_items, finished_items=finished_items) # (B, num_codebooks)
+                            audio_code_candidates.append(audio_codes_next)
+                        audio_code_candidates = torch.cat(audio_code_candidates, dim=0)
+                        disc_preds, disc_preds_raw = discriminator.infer_batch(codes=audio_code_candidates)
+                        # choose best-ranked audio code
+                        audio_codes_next = audio_code_candidates[disc_preds_raw.argmax()].unsqueeze(0)
+                    else:
+                        disc_preds, disc_preds_raw = discriminator.infer_batch(codes=audio_codes_next)
+                        if resample_threshold is not None:
+                            # TODO make this work better with batches
+                            if False:
+                                while (disc_preds_raw < resample_threshold).any():
+                                    print(f"Resampling at timestep {idx}")
+                                    audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, 
+                                                                                        unfinished_items=unifinished_items, finished_items=finished_items)
+                                    disc_preds, disc_preds_raw = discriminator.infer_batch(codes=audio_codes_next)                                
+                            else:
+                                if (disc_preds_raw < resample_threshold).any():
+                                    resample_counter += 1
+                                    print(f"Resampling at timestep {idx}")
+                                    audio_codes_next = self.sample_codes_from_local_transformer(
+                                                    dec_output=dec_out[:,-1,:], 
+                                                    temperature=temperature, 
+                                                    topk=topk, 
+                                                    unfinished_items=unifinished_items, 
+                                                    finished_items=finished_items,
+                                                    use_cfg=use_cfg,
+                                                    cfg_scale=cfg_scale
+                                    )
+                                    all_codes_next_argmax = audio_codes_next                                    
+                                    disc_preds, disc_preds_raw = discriminator.infer_batch(codes=audio_codes_next)                                
+                        disc_preds_all_timesteps.append(disc_preds)
+                        disc_preds_raw_all_timesteps.append(disc_preds_raw)
+                                
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
                         pred_token = all_codes_next_argmax[item_idx][0].item()
@@ -1308,11 +1352,17 @@ class T5TTS_Model(ModelPT):
             }
             torch.cuda.empty_cache()
             if return_cross_attn_probs:
+                if resample_and_rank:
+                    disc_preds_all_timesteps = None
+                    disc_preds_raw_all_timesteps = None
+                else:
+                    disc_preds_all_timesteps = torch.cat(disc_preds_all_timesteps)
+                    disc_preds_raw_all_timesteps = torch.cat(disc_preds_raw_all_timesteps)
                 cross_attention_maps, headwise_cross_attention_maps = self.get_inference_attention_plots(
                     cross_attention_scores_all_timesteps, all_heads_cross_attn_scores_all_timesteps,
                     context_tensors['text_lens'], predicted_codes_lens, text.size(0), compute_all_heads_attn_maps
                 )
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics, cross_attention_maps, headwise_cross_attention_maps
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics, cross_attention_maps, headwise_cross_attention_maps, disc_preds_all_timesteps, disc_preds_raw_all_timesteps, resample_counter
             else:
                 # For backward compatibility
                 return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics
@@ -1733,6 +1783,20 @@ class T5TTS_Discriminator(ModelPT):
         audio_embedding = torch.stack(audio_embedding_list, dim=1)        
         return audio_embedding # (B, C, E)
 
+    def infer_batch(self, codes):
+        B, C = codes.shape
+        # Prepend with CLS token
+        codes = torch.cat([torch.ones_like(codes[:, 0:1], device=self.device) * self.audio_cls_id, codes], dim=1)
+        codes_lens = torch.ones(B, device=self.device, dtype=torch.long) * (C + 1) # +1 for the CLS token
+        codes_embedded = self.embed_audio_codes(codes)
+        codes_projected = self.audio_emb_to_model_proj(codes_embedded)
+        mask = get_mask_from_lengths(codes_lens)
+        logits, attn_info, dec_out = self.forward(codes_projected, mask)
+        cls_logits = logits[:, 0].squeeze(1) # B
+        preds_raw = cls_logits # torch.sigmoid(cls_logits)
+        preds = torch.sigmoid(cls_logits) > 0.5
+        return preds, preds_raw
+    
     def process_batch(self, batch, mode="train"):
         audio_codes = batch['audio_codes'] # B, C
         audio_codes_lens = batch['audio_codes_lens'] # B

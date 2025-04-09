@@ -1159,6 +1159,7 @@ class T5TTS_Model(ModelPT):
             all_heads_cross_attn_scores_all_timesteps = []
             disc_preds_all_timesteps = []
             disc_preds_raw_all_timesteps = []
+            disc_preds_post_sigmoid_all_timesteps = []
             _attn_prior = None
             unfinished_texts = {}
             finished_texts_counter = {}
@@ -1286,7 +1287,7 @@ class T5TTS_Model(ModelPT):
                         # choose best-ranked audio code
                         audio_codes_next = audio_code_candidates[disc_preds_raw.argmax()].unsqueeze(0)
                     else:
-                        disc_preds, disc_preds_raw = discriminator.infer_batch(codes=audio_codes_next)
+                        disc_preds, disc_preds_raw, disc_preds_post_sigmoid = discriminator.infer_batch(codes=audio_codes_next)
                         if resample_threshold is not None:
                             # TODO make this work better with batches
                             if False:
@@ -1312,7 +1313,7 @@ class T5TTS_Model(ModelPT):
                                     disc_preds, disc_preds_raw = discriminator.infer_batch(codes=audio_codes_next)                                
                         disc_preds_all_timesteps.append(disc_preds)
                         disc_preds_raw_all_timesteps.append(disc_preds_raw)
-                                
+                        disc_preds_post_sigmoid_all_timesteps.append(disc_preds_post_sigmoid)
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
                         pred_token = all_codes_next_argmax[item_idx][0].item()
@@ -1355,14 +1356,16 @@ class T5TTS_Model(ModelPT):
                 if resample_and_rank:
                     disc_preds_all_timesteps = None
                     disc_preds_raw_all_timesteps = None
+                    disc_preds_post_sigmoid_all_timesteps = None
                 else:
                     disc_preds_all_timesteps = torch.cat(disc_preds_all_timesteps)
                     disc_preds_raw_all_timesteps = torch.cat(disc_preds_raw_all_timesteps)
+                    disc_preds_post_sigmoid_all_timesteps = torch.cat(disc_preds_post_sigmoid_all_timesteps)
                 cross_attention_maps, headwise_cross_attention_maps = self.get_inference_attention_plots(
                     cross_attention_scores_all_timesteps, all_heads_cross_attn_scores_all_timesteps,
                     context_tensors['text_lens'], predicted_codes_lens, text.size(0), compute_all_heads_attn_maps
                 )
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics, cross_attention_maps, headwise_cross_attention_maps, disc_preds_all_timesteps, disc_preds_raw_all_timesteps, resample_counter
+                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics, cross_attention_maps, headwise_cross_attention_maps, disc_preds_all_timesteps, disc_preds_raw_all_timesteps, disc_preds_post_sigmoid_all_timesteps, resample_counter
             else:
                 # For backward compatibility
                 return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics
@@ -1794,8 +1797,9 @@ class T5TTS_Discriminator(ModelPT):
         logits, attn_info, dec_out = self.forward(codes_projected, mask)
         cls_logits = logits[:, 0].squeeze(1) # B
         preds_raw = cls_logits # torch.sigmoid(cls_logits)
-        preds = torch.sigmoid(cls_logits) > 0.5
-        return preds, preds_raw
+        preds_post_sigmoid = torch.sigmoid(cls_logits)
+        preds = preds_post_sigmoid > 0.5
+        return preds, preds_raw, preds_post_sigmoid
     
     def process_batch(self, batch, mode="train"):
         audio_codes = batch['audio_codes'] # B, C

@@ -783,9 +783,19 @@ class MagpieTTSModel(ModelPT):
         attention_scores_mean = attention_scores_mean[
             :, :, dec_context_size:, :
         ]  # Remove the context audio embeddings from the attention scores
-        alignment_loss = self.alignment_loss(
-            attn_logprob=attention_scores_mean, in_lens=text_lens, out_lens=audio_lens
-        )
+            # Convert to float32 since CTC is unstable with bfloat16
+        
+        if self.cfg.get('ctc_float32', False):
+            attention_scores_mean = attention_scores_mean.to(dtype=torch.float32)
+            with torch.autocast(dtype=torch.float32, device_type=attention_scores_mean.device.type):
+                alignment_loss = self.alignment_loss(
+                    attn_logprob=attention_scores_mean, in_lens=text_lens, out_lens=audio_lens
+                )
+        else:
+            alignment_loss = self.alignment_loss(
+                attn_logprob=attention_scores_mean, in_lens=text_lens, out_lens=audio_lens
+                )
+
         return alignment_loss
 
     def prepare_context_tensors(self, batch):
@@ -1132,13 +1142,17 @@ class MagpieTTSModel(ModelPT):
         codebook_loss, loss_mask = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target)
         codebook_loss_scale = self.cfg.get('codebook_loss_scale', 1.0)
         alignment_loss = None
-        if self.cfg.alignment_loss_scale > 0.0 and not disable_alignment_loss:
-            text_lens = context_tensors['text_lens']
-            ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
-            cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
-            alignment_loss = self.compute_alignment_loss(
-                cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size
-            )
+        if self.cfg.alignment_loss_scale > 0.0:
+            if disable_alignment_loss:
+                # don't make this `None` because it will cause sync issues when logging
+                alignment_loss = torch.zeros_like(codebook_loss)
+            else:
+                text_lens = context_tensors['text_lens']
+                ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
+                cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
+                alignment_loss = self.compute_alignment_loss(
+                    cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size
+                )
             loss = codebook_loss_scale * codebook_loss + alignment_loss
         else:
             loss = codebook_loss_scale * codebook_loss
@@ -1189,12 +1203,9 @@ class MagpieTTSModel(ModelPT):
         loss = batch_output['loss']
         codebook_loss = batch_output['codebook_loss']
         self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
-        if self.cfg.get('cfg_unconditional_prob', 0.0) == 0.0:
-            # Only log alignment loss when not using cfg to avoid sync issues when
-            # alignment loss is None on some ranks
-            alignment_loss = batch_output['alignment_loss']
-            if alignment_loss is not None:
-                self.log('train/alignment_loss', alignment_loss, prog_bar=True, sync_dist=True)
+        alignment_loss = batch_output['alignment_loss']
+        if alignment_loss is not None:
+            self.log('train/alignment_loss', alignment_loss, prog_bar=True, sync_dist=True)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
         local_transformer_loss = batch_output['local_transformer_loss']
         if local_transformer_loss is not None:

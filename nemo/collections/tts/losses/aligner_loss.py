@@ -68,6 +68,10 @@ class ForwardSumLoss(Loss):
 
         # Evaluate CTC loss
         cost = self.ctc_loss(attn_logprob, target_seqs, input_lengths=query_lens, target_lengths=key_lens)
+        # print(f"query_lens: {query_lens}")
+        # print(f"key_lens: {key_lens}")
+        # print(f"cost: {cost}")
+        # print(f"Cost is 0? {cost == 0}\n")
         cost *= self.loss_scale
 
         return cost

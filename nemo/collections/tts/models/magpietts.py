@@ -17,6 +17,7 @@ import random
 import string
 import time
 from typing import List
+from contextlib import nullcontext
 
 import librosa
 import numpy as np
@@ -775,23 +776,24 @@ class MagpieTTSModel(ModelPT):
                 return new_prior
 
     def compute_alignment_loss(self, attention_scores, text_lens, audio_lens, dec_context_size=0):
-        # attention scores: List of (B, C, audio_timesteps, text_timesteps)
-        attention_scores_combined = torch.cat(attention_scores, dim=1)  # (B, C, audio_timesteps, text_timesteps)
-        attention_scores_mean = attention_scores_combined.mean(
-            dim=1, keepdim=True
-        )  # (B, 1, audio_timesteps, text_timesteps)
-        attention_scores_mean = attention_scores_mean[
-            :, :, dec_context_size:, :
-        ]  # Remove the context audio embeddings from the attention scores
-            # Convert to float32 since CTC is unstable with bfloat16
-        
         if self.cfg.get('ctc_float32', False):
-            attention_scores_mean = attention_scores_mean.to(dtype=torch.float32)
-            with torch.autocast(dtype=torch.float32, device_type=attention_scores_mean.device.type):
-                alignment_loss = self.alignment_loss(
-                    attn_logprob=attention_scores_mean, in_lens=text_lens, out_lens=audio_lens
-                )
+            attention_scores = [scores.to(dtype=torch.float32) for scores in attention_scores]
+            precision_context_manager = torch.autocast(dtype=torch.float32, device_type=attention_scores[0].device.type)
         else:
+            # nothing to do
+            precision_context_manager = nullcontext()
+        
+        with precision_context_manager:
+            # attention scores: List of (B, C, audio_timesteps, text_timesteps)
+            attention_scores_combined = torch.cat(attention_scores, dim=1)  # (B, C, audio_timesteps, text_timesteps)
+            attention_scores_mean = attention_scores_combined.mean(
+                dim=1, keepdim=True
+            )  # (B, 1, audio_timesteps, text_timesteps)
+            attention_scores_mean = attention_scores_mean[
+                :, :, dec_context_size:, :
+            ]  # Remove the context audio embeddings from the attention scores
+                # Convert to float32 since CTC is unstable with bfloat16
+            
             alignment_loss = self.alignment_loss(
                 attn_logprob=attention_scores_mean, in_lens=text_lens, out_lens=audio_lens
                 )

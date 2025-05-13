@@ -1154,8 +1154,9 @@ class MagpieTTSModel(ModelPT):
                 ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
                 cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
                 self.cross_attention_scores_cloned = [cas.clone() for cas in cross_attention_scores]
-                for cas in self.cross_attention_scores_cloned:
-                    cas.retain_grad()
+                if mode == "train":
+                    for cas in self.cross_attention_scores_cloned:
+                        cas.retain_grad()
                 alignment_loss = self.compute_alignment_loss(
                     self.cross_attention_scores_cloned, text_lens, audio_codes_lens_target, dec_context_size
                 )

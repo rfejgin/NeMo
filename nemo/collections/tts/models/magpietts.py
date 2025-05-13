@@ -1883,9 +1883,9 @@ class MagpieTTSModel(ModelPT):
         self._test_dl = self._setup_test_dataloader(cfg)
         
     def on_before_optimizer_step(self, optimizer):
-        if self.cfg.get("log_grad_norm", False):
+        if self.cfg.get("log_grad_norms", False):
             norms = {
-                f"grad_2_norm/cross_attention_scores_cloned_{i}": self.cross_attention_scores_cloned[i].grad.data.norm(2)
+                f"grad_norm/cross_attention_scores_cloned_{i}": self.cross_attention_scores_cloned[i].grad.data.norm(2)
                 for i in range(len(self.cross_attention_scores_cloned))
             }
             total_norm = torch.tensor(list(norms.values())).sum()

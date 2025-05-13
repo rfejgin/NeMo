@@ -27,6 +27,7 @@ import wandb
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
+from lightning.pytorch.utilities import grad_norm
 from omegaconf import DictConfig, open_dict
 from torch import nn
 from torch.utils.data import get_worker_info
@@ -1152,8 +1153,11 @@ class MagpieTTSModel(ModelPT):
                 text_lens = context_tensors['text_lens']
                 ctc_prior_layer_ids = self.cfg.get('ctc_prior_layer_ids', self.transcript_decoder_layers)
                 cross_attention_scores = [attn['cross_attn_probabilities'][1] for layer_idx, attn in enumerate(attn_info) if layer_idx in ctc_prior_layer_ids]
+                self.cross_attention_scores_cloned = [cas.clone() for cas in cross_attention_scores]
+                for cas in self.cross_attention_scores_cloned:
+                    cas.retain_grad()
                 alignment_loss = self.compute_alignment_loss(
-                    cross_attention_scores, text_lens, audio_codes_lens_target, dec_context_size
+                    self.cross_attention_scores_cloned, text_lens, audio_codes_lens_target, dec_context_size
                 )
             loss = codebook_loss_scale * codebook_loss + alignment_loss
         else:
@@ -1876,6 +1880,16 @@ class MagpieTTSModel(ModelPT):
 
     def setup_test_data(self, cfg):
         self._test_dl = self._setup_test_dataloader(cfg)
+        
+    def on_before_optimizer_step(self, optimizer):
+        if self.cfg.get("log_grad_norm", False):
+            norms = {
+                f"grad_2_norm/cross_attention_scores_cloned_{i}": self.cross_attention_scores_cloned[i].grad.data.norm(2)
+                for i in range(len(self.cross_attention_scores_cloned))
+            }
+            total_norm = torch.tensor(list(norms.values())).sum()
+            norms[f"grads/cross_attention_scores_cloned_total_norm"] = total_norm
+            self.log_dict(norms)
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:

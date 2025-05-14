@@ -1885,12 +1885,13 @@ class MagpieTTSModel(ModelPT):
     def on_before_optimizer_step(self, optimizer):
         if self.cfg.get("log_grad_norms", False):
             norms = {}
-            for i, cas in enumerate(self.cross_attention_scores_cloned):
-                if cas.grad is not None:
-                    norms[f"grad_norm/cross_attention_scores_cloned_{i}"] = cas.grad.data.norm(2)
-            total_norm = torch.tensor(list(norms.values())).norm(2)
-            norms[f"grads/cross_attention_scores_cloned_total_norm"] = total_norm
-            self.log_dict(norms)
+            if hasattr(self, 'cross_attention_scores_cloned'):
+                for i, cas in enumerate(self.cross_attention_scores_cloned):
+                    if cas.grad is not None:
+                        norms[f"grad_norm/cross_attention_scores_cloned_{i}"] = cas.grad.data.norm(2)
+                total_norm = torch.tensor(list(norms.values())).norm(2)
+                norms[f"grads/cross_attention_scores_cloned_total_norm"] = total_norm
+                self.log_dict(norms)
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:

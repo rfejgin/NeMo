@@ -886,8 +886,24 @@ class MagpieTTSModel(ModelPT):
 
         return all_preds
 
-    def sample_codes_from_logits(self, all_code_logits_t, temperature=0.7, topk=80, unfinished_items={}, finished_items={}, forbid_audio_eos=False):
-        # all_code_logits_t: (B, num_codebooks * num_tokens_per_codebook), logits at a given timestep
+    def calc_codebook_entropy(self, codebook_logits):
+        # codebook_logits: (num_tokens_per_codebook,)
+        codebook_probs = torch.softmax(codebook_logits, dim=-1)
+        # calculate entropy
+        entropy = -torch.sum(codebook_probs[:, :2016] * torch.log(codebook_probs[:, :2016])) # exclude special tokens
+        return entropy
+ 
+    def calc_average_codebook_entropy(self, logits):
+        # codebook_logits: (B, num_codebooks * num_tokens_per_codebook)
+        average_entropy = torch.zeros(logits.size(0), device=logits.device)
+        for c in range(self.num_audio_codebooks):
+            codebook_logits = logits[:, c*self.num_all_tokens_per_codebook:(c+1)*self.num_all_tokens_per_codebook]
+            entropy = self.calc_codebook_entropy(codebook_logits)
+            average_entropy += entropy
+        average_entropy /= self.num_audio_codebooks
+        return average_entropy
+
+    def sample_codes_from_logits(self, all_code_logits_t, temperature=0.7, topk=80, unfinished_items={}, finished_items={}, forbid_audio_eos=False):       
         all_preds = [[] for _ in range(self.frame_stacking_factor)]
         for fs_index in range(self.frame_stacking_factor):
             for idx in range(self.num_audio_codebooks):
@@ -1805,6 +1821,14 @@ class MagpieTTSModel(ModelPT):
             maskgit_sampling_type=None,
             min_generated_frames=4,
             eos_detection_type='all_codebooks'):
+        # attach debugger if not attached
+        import debugpy
+        # only attach if not already attached
+        if not debugpy.is_client_connected():
+            debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
+            print('Waiting for debugger to attach...')
+            debugpy.wait_for_client()  # This will block execution until the debugger attaches
+            print('Debugger is attached!')
         with torch.no_grad():
             start_time = time.time()
             self.decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
@@ -1906,7 +1930,22 @@ class MagpieTTSModel(ModelPT):
 
                     cond_logits = combined_logits[:batch_size]
                     uncond_logits = combined_logits[batch_size:]
-                    all_code_logits = (1 - cfg_scale) * uncond_logits + cfg_scale * cond_logits
+
+                    cond_entropy = self.calc_average_codebook_entropy(cond_logits[:, -1, :]).cpu().item()
+                    uncond_entropy = self.calc_average_codebook_entropy(uncond_logits[:, -1, :]).cpu().item()
+                    cond_threshold = 4.0
+                    if cond_entropy < cond_threshold:
+                        # scale down cfg_scale proportionally
+                        cfg_scale_current = cfg_scale * (cond_entropy / cond_threshold) /2.0 # more aggressive scaling down
+                        cfg_scale_current = max(cfg_scale_current, 1.0)
+                        # increase temperature proportionally
+                        temperature_current = temperature * (cond_threshold / cond_entropy)
+                        temperature_current = min(temperature_current, 1.5)
+                    else:
+                        temperature_current = temperature
+                        cfg_scale_current = cfg_scale
+                    print(f"idx {idx}, Cond entropy: {cond_entropy:.2f}, Uncond entropy: {uncond_entropy:.2f}, cfg_scale_current: {cfg_scale_current:.2f}, temperature_current: {temperature_current:.2f}")
+                    all_code_logits = (1 - cfg_scale_current) * uncond_logits + cfg_scale_current * cond_logits
                 else:
                     batch_size = audio_codes_embedded.size(0)
                     all_code_logits, attn_probs, dec_out = self.forward(
@@ -1962,7 +2001,7 @@ class MagpieTTSModel(ModelPT):
                         # Autoregressive sampling with local transformer
                         audio_codes_next = self.local_transformer_sample_autoregressive(
                             dec_output=dec_out[:,-1,:],
-                            temperature=temperature,
+                            temperature=temperature_current,
                             topk=topk,
                             unfinished_items=unfinished_items,
                             finished_items=finished_items,
@@ -1974,7 +2013,7 @@ class MagpieTTSModel(ModelPT):
                     elif self.local_transformer_type == LocalTransformerType.MASKGIT:
                         audio_codes_next = self.local_transformer_sample_maskgit(
                             dec_output=dec_out[:,-1,:],
-                            temperature=temperature,
+                            temperature=temperature_current,
                             topk=topk,
                             unfinished_items=unfinished_items,
                             finished_items=finished_items,
@@ -1991,7 +2030,7 @@ class MagpieTTSModel(ModelPT):
                         raise ValueError(f"Local transformer inference requested by but local transformer type is {self.local_transformer_type}")
                 else:
                     # Parallel sampling from all codebooks
-                    audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk, unfinished_items=unfinished_items, finished_items=finished_items, forbid_audio_eos=forbid_audio_eos) # (B, num_codebooks, frame_stacking_factor)
+                    audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature_current, topk=topk, unfinished_items=unfinished_items, finished_items=finished_items, forbid_audio_eos=forbid_audio_eos) # (B, num_codebooks, frame_stacking_factor)
                 all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01, unfinished_items=unfinished_items, finished_items=finished_items, forbid_audio_eos=forbid_audio_eos) # (B, num_codebooks, frame_stacking_factor)
 
                 for item_idx in range(all_codes_next_argmax.size(0)):

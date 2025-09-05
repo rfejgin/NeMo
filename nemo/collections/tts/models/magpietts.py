@@ -1760,7 +1760,7 @@ class MagpieTTSModel(ModelPT):
 
         return cross_attention_maps, headwise_cross_attention_maps
 
-    def find_eos_frame_index(self, codes) -> Optional[int]:
+    def find_eos_frame_index(self, codes, eos_detection_type='all_codebooks') -> Optional[int]:
         """
         Checks for EOS in the predicted codes. Returns the index of the first frame within the frame stack
         that contains an EOS token across any codebook, or `None` if no EOS is found.
@@ -1770,7 +1770,10 @@ class MagpieTTSModel(ModelPT):
             index (within the frame stack) of the first frame with EOS, or `None` if no EOS is found
         """
         eos_mask = (codes == self.audio_eos_id)  # (codebooks, frame_stacking_factor)
-        eos_per_frame = eos_mask.any(dim=0)  # (frame_stacking_factor,) - True if any codebook has EOS in this frame
+        if eos_detection_type == 'all_codebooks':
+            eos_per_frame = eos_mask.all(dim=0)  # (frame_stacking_factor,) - True if any codebook has EOS in this frame
+        elif eos_detection_type == 'any_codebook':
+            eos_per_frame = eos_mask.any(dim=0)  # (frame_stacking_factor,) - True if any codebook has EOS in this frame
         # find first frame with EOS
         if eos_per_frame.any():
             # return index of the first frame with EOS
@@ -1800,7 +1803,8 @@ class MagpieTTSModel(ModelPT):
             maskgit_fixed_schedule=None,
             maskgit_dynamic_cfg_scale=False,
             maskgit_sampling_type=None,
-            min_generated_frames=4):
+            min_generated_frames=4,
+            eos_detection_type='all_codebooks'):
         with torch.no_grad():
             start_time = time.time()
             self.decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
@@ -1993,8 +1997,8 @@ class MagpieTTSModel(ModelPT):
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
                         # check for EOS (including within the frame stack)
-                        eos_frame_multinomial = self.find_eos_frame_index(audio_codes_next[item_idx])
-                        eos_frame_argmax = self.find_eos_frame_index(all_codes_next_argmax[item_idx])                        
+                        eos_frame_multinomial = self.find_eos_frame_index(audio_codes_next[item_idx], eos_detection_type=eos_detection_type)
+                        eos_frame_argmax = self.find_eos_frame_index(all_codes_next_argmax[item_idx], eos_detection_type=eos_detection_type)                        
                         eos_frame_multinomial = eos_frame_multinomial if eos_frame_multinomial is not None else float('inf')
                         eos_frame_argmax = eos_frame_argmax if eos_frame_argmax is not None else float('inf')
                         # pick minimum of the two

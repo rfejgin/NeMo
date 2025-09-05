@@ -287,7 +287,8 @@ def run_inference(
         hparams_file_from_wandb=False,
         log_exp_name=False,
         compute_fcd=False,
-        violin_plot_metrics=['cer', 'pred_context_ssim']
+        violin_plot_metrics=['cer', 'pred_context_ssim'],
+        eos_detection_type='all_codebooks'
     ):
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
@@ -469,7 +470,8 @@ def run_inference(
                     maskgit_n_steps=maskgit_n_steps,
                     maskgit_noise_scale=maskgit_noise_scale,
                     maskgit_fixed_schedule=maskgit_fixed_schedule,
-                    maskgit_sampling_type=maskgit_sampling_type
+                    maskgit_sampling_type=maskgit_sampling_type,
+                    eos_detection_type=eos_detection_type
                 )
 
                 all_rtf_metrics.append(rtf_metrics)
@@ -627,6 +629,7 @@ def main():
     parser.add_argument('--log_exp_name', action='store_true', help="Include the experiment name (derived from the checkpoint path) in the output folder name.")
     parser.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
     parser.add_argument('--violin_plot_metrics', type=str, nargs='*', default=['cer','pred_context_ssim'], help="Which metrics to add the violin plot.")
+    parser.add_argument('--eos_detection_type', type=str, default='all_codebooks', choices=['all_codebooks', 'any_codebook'])
     args = parser.parse_args()
 
     if args.datasets is None:
@@ -673,7 +676,8 @@ def main():
         hparams_file_from_wandb=args.hparams_file_from_wandb,
         log_exp_name=args.log_exp_name,
         compute_fcd=compute_fcd,
-        violin_plot_metrics=args.violin_plot_metrics
+        violin_plot_metrics=args.violin_plot_metrics,
+        eos_detection_type=args.eos_detection_type
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

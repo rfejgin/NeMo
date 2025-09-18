@@ -47,10 +47,20 @@ dataset_meta_info = {
         'audio_dir' : '/Data/LibriTTS',
         'feature_dir' : '/Data/LibriTTS',
     },
+        'libritts_test_clean_small': {
+        'manifest_path' : '/Data/evaluation_manifests/LibriTTS_test_clean_withContextAudioPaths_small.json',
+        'audio_dir' : '/Data/LibriTTS',
+        'feature_dir' : '/Data/LibriTTS',
+    },
     # We need an4_val_ci just for CI tests
     'an4_val_ci': {
         'manifest_path' : '/home/TestData/an4_dataset/an4_val_context_v1.json',
         'audio_dir' : '/',
         'feature_dir' : None,
+    },
+    'debug': {
+        'manifest_path' : '/home/rfejgin/debug_manifests/debug.json',
+        'audio_dir' : '/Data/LibriTTS',
+        'feature_dir' : '/Data/LibriTTS',
     },
 }

@@ -2041,11 +2041,11 @@ class MagpieTTSModel(ModelPT):
         import debugpy
 
         # only attach if not already attached
-        if not debugpy.is_client_connected():
-            debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
-            print('Waiting for debugger to attach...')
-            debugpy.wait_for_client()  # This will block execution until the debugger attaches
-            print('Debugger is attached!')
+        # if not debugpy.is_client_connected():
+        #     debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
+        #     print('Waiting for debugger to attach...')
+        #     debugpy.wait_for_client()  # This will block execution until the debugger attaches
+        #     print('Debugger is attached!')
         batch_output = self.process_batch(batch)
         loss = batch_output['loss']
         codebook_loss = batch_output['codebook_loss']
@@ -2444,11 +2444,11 @@ class MagpieTTSModel(ModelPT):
         import debugpy
 
         # only attach if not already attached
-        if not debugpy.is_client_connected():
-            debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
-            print('Waiting for debugger to attach...')
-            debugpy.wait_for_client()  # This will block execution until the debugger attaches
-            print('Debugger is attached!')
+        # if not debugpy.is_client_connected():
+        #     debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
+        #     print('Waiting for debugger to attach...')
+        #     debugpy.wait_for_client()  # This will block execution until the debugger attaches
+        #     print('Debugger is attached!')
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
             start_time = time.time()

@@ -37,6 +37,11 @@ dataset_meta_info = {
         'audio_dir': '/Data/VCTK-Corpus-0.92',
         'feature_dir': '/Data/VCTK-Corpus-0.92',
     },
+    'vctk_tiny': {
+        'manifest_path': '/datap/misc/speechllm_codecdatasets/manifests/t5_exp/vctk_tiny.json',
+        'audio_dir': '/Data/VCTK-Corpus-0.92',
+        'feature_dir': '/Data/VCTK-Corpus-0.92',
+    },
     'libritts_seen': {
         'manifest_path': '/Data/evaluation_manifests/LibriTTS_seen_evalset_from_testclean_v2.json',
         'audio_dir': '/Data/LibriTTS',
@@ -44,6 +49,16 @@ dataset_meta_info = {
     },
     'libritts_test_clean': {
         'manifest_path': '/Data/evaluation_manifests/LibriTTS_test_clean_withContextAudioPaths.jsonl',
+        'audio_dir': '/Data/LibriTTS',
+        'feature_dir': '/Data/LibriTTS',
+    },
+    'libri_unseen_tiny': {
+        'manifest_path': '/Data/evaluation_manifests/libri_unseen_tiny.json',
+        'audio_dir': '/Data/LibriTTS',
+        'feature_dir': '/Data/LibriTTS',
+    },
+    'libritts_test_clean_small': {
+        'manifest_path': '/Data/evaluation_manifests/LibriTTS_test_clean_withContextAudioPaths_small.json',
         'audio_dir': '/Data/LibriTTS',
         'feature_dir': '/Data/LibriTTS',
     },

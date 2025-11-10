@@ -90,6 +90,14 @@ class MagpieTTSModel(ModelPT):
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
+        # attach debugger if not attached
+        # import debugpy
+        # # # only attach if not already attached
+        # if not debugpy.is_client_connected():
+        #     debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
+        #     print('Waiting for debugger to attach...')
+        #     debugpy.wait_for_client()  # This will block execution until the debugger attaches
+        #     print('Debugger is attached!')
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
@@ -787,6 +795,15 @@ class MagpieTTSModel(ModelPT):
         ] = float('-inf')
         return logits
 
+    # calculate entropy of a distribution
+    @staticmethod
+    def entropy(probs: torch.Tensor, dim: int = -1, eps: float = 1e-10) -> torch.Tensor:
+        # Clamp probabilities to avoid log(0)
+        probs = torch.clamp(probs, min=eps)
+
+        # H(X) = -sum(p(x) * log(p(x)))
+        return -torch.sum(probs * torch.log(probs), dim=dim)
+
     def local_transformer_sample_maskgit(
         self,
         dec_output: torch.Tensor,
@@ -1010,6 +1027,141 @@ class MagpieTTSModel(ModelPT):
                 index=topk_indices, dim=1, src=max_confidence * torch.ones_like(topk_indices, dtype=torch.float)
             )
         codes = sampled_codes
+        assert not (
+            codes == self.mask_token_id
+        ).any(), "Codes contain mask tokens after completion of MaskGit sampling"
+
+        # break stacked groups of frames into individual frames
+        codes = codes.reshape(B, self.frame_stacking_factor, self.num_audio_codebooks).permute(
+            0, 2, 1
+        )  # B, C, frame_stacking_factor
+
+        if use_cfg:
+            # drop unconditional codes
+            codes = codes[:actual_batch_size]
+        return codes
+
+    def local_transformer_sample_maskgit_with_entropy(
+        self,
+        dec_output: torch.Tensor,
+        temperature: float = 0.7,
+        topk: int = 80,
+        unfinished_items: Dict[int, bool] = {},
+        finished_items: Dict[int, bool] = {},
+        use_cfg: bool = False,
+        cfg_scale: float = 1.0,
+        forbid_audio_eos: bool = False,
+    ) -> torch.Tensor:
+
+        # dec_output: (B, E)
+        device = dec_output.device
+        # disable KV cache since our transformer is not causal
+        self.local_transformer.reset_cache(use_cache=False)
+        dec_output = dec_output.unsqueeze(1)  # (B, 1, E)
+        local_transformer_input_init = self.local_transformer_in_projection(
+            dec_output
+        )  # (B, 1, D) where D is the dimension of the local transformer
+        codebook_seq_len = self.num_audio_codebooks * self.frame_stacking_factor
+        B = dec_output.size(0)
+
+        # initialize to all masked
+        codes = self.mask_token_id * torch.ones((B, codebook_seq_len), device=device, dtype=torch.long)
+        sampled_codes = codes.clone()
+        repeat_factor = 2
+        stacking_factor = self.frame_stacking_factor
+        for step in range(stacking_factor * repeat_factor + 1):
+            if use_cfg:
+                actual_batch_size = B // repeat_factor
+
+            # build transformer input
+            local_transformer_input = local_transformer_input_init
+            for codebook_num in range(codebook_seq_len):
+                next_local_transformer_input = self.audio_embeddings[codebook_num](codes[:, codebook_num]).unsqueeze(
+                    1
+                )  # (B, 1, 768)
+                next_local_transformer_input = self.local_transformer_in_projection(
+                    next_local_transformer_input
+                )  # (B, 1, d_local)
+                local_transformer_input = torch.cat(
+                    [local_transformer_input, next_local_transformer_input], dim=1
+                )  # (B, codebook_num+1, d_local)
+
+            # run transformer
+            _mask = torch.ones(B, codebook_seq_len + 1, device=device)
+            local_transformer_output = self.local_transformer(local_transformer_input, _mask)[
+                'output'
+            ]  # (B, C+1, d_local)
+
+            # get logits
+            logits = []
+            for codebook_num in range(codebook_seq_len):
+                # The `codebook_num+1` is to drop first position which corresponds to the magpie latent
+                codebook_logits = self.local_transformer_out_projections[codebook_num](
+                    local_transformer_output[:, codebook_num + 1, :]
+                )  # (B, num_audio_tokens_per_codebook)
+                logits.append(codebook_logits)
+            logits = torch.stack(logits, dim=1)  # (B, C*frame_stacking_factor, num_audio_tokens_per_codebook)
+
+            # apply CFG
+            if use_cfg:
+                actual_batch_size = logits.size(0) // 2
+                conditional_logits = logits[:actual_batch_size]
+                unconditional_logits = logits[actual_batch_size:]
+                current_cfg_scale = cfg_scale
+                cfg_logits = current_cfg_scale * conditional_logits + (1.0 - current_cfg_scale) * unconditional_logits
+                logits[:actual_batch_size] = cfg_logits
+
+            # Disallow generation of special tokens
+            logits = self.clear_forbidden_logits(logits, forbid_audio_eos=forbid_audio_eos)
+
+            # handle unfinished and finished items
+            for item_idx in unfinished_items:
+                logits[item_idx, self.audio_eos_id] = float('-inf')
+            for item_idx in finished_items:
+                logits[item_idx, :, :] = float('-inf')
+                logits[item_idx, :, self.audio_eos_id] = 0.0
+
+            # sample with top-k
+            logits_topk = torch.topk(logits, topk, dim=-1)[0]  # (B, C, topk)
+            indices_to_remove = logits < logits_topk[:, :, -1].unsqueeze(-1)  # (B, C, num_audio_tokens_per_codebook)
+            logits_rescored = logits.clone()
+            logits_rescored[indices_to_remove] = float('-inf')
+            probs = torch.softmax(logits_rescored / temperature, dim=-1)  # (B, C, num_audio_tokens_per_codebook)
+            sampled_codes = torch.multinomial(probs.view(B * codebook_seq_len, -1), 1).view(B, codebook_seq_len)
+            if use_cfg:
+                sampled_codes[actual_batch_size:] = sampled_codes[:actual_batch_size]
+                probs[actual_batch_size:] = probs[:actual_batch_size]
+
+            if step < stacking_factor * repeat_factor:
+                cur_frame_start_idx = step // 2 * self.num_audio_codebooks
+                entropies = self.entropy(probs, dim=2)  # (B, C)
+                # get sampled code for top 2 min-entropy codebooks for current frame in frame stacking factor
+                _, min_entropy_codebooks = torch.topk(
+                    entropies[:, cur_frame_start_idx : cur_frame_start_idx + self.num_audio_codebooks],
+                    k=2,
+                    dim=-1,
+                    largest=False,
+                )  # (B, 2)
+                # replace codes with top 2 min-entropy codebooks for current frame in frame stacking factor
+                for batch_idx in range(B):
+                    if step % repeat_factor == 0:
+                        codebook_idx = min_entropy_codebooks[batch_idx, 0]
+                    else:
+                        codebook_idx = min_entropy_codebooks[batch_idx, 1]
+                    codes[batch_idx, cur_frame_start_idx + codebook_idx] = sampled_codes[
+                        batch_idx, cur_frame_start_idx + codebook_idx
+                    ]
+
+            else:
+                argmax = True
+                if not argmax:
+                    # update all remaining non-masked codebooks with the sampled codes
+                    codes[codes == self.mask_token_id] = sampled_codes[codes == self.mask_token_id]
+                else:
+                    # argmax sampling for last step
+                    max_prob_codes = torch.argmax(probs, dim=2)  # (B, C*frame_stacking_factor)
+                    codes[codes == self.mask_token_id] = max_prob_codes[codes == self.mask_token_id]
+            self.visualize_codes(codes, frame_stacking_rate=self.frame_stacking_factor)
         assert not (
             codes == self.mask_token_id
         ).any(), "Codes contain mask tokens after completion of MaskGit sampling"
@@ -1885,6 +2037,15 @@ class MagpieTTSModel(ModelPT):
         }
 
     def training_step(self, batch, batch_idx):
+        # attach debugger if not attached
+        import debugpy
+
+        # only attach if not already attached
+        if not debugpy.is_client_connected():
+            debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
+            print('Waiting for debugger to attach...')
+            debugpy.wait_for_client()  # This will block execution until the debugger attaches
+            print('Debugger is attached!')
         batch_output = self.process_batch(batch)
         loss = batch_output['loss']
         codebook_loss = batch_output['codebook_loss']
@@ -2280,6 +2441,14 @@ class MagpieTTSModel(ModelPT):
         # lines up with the codec's minimum frame requirement.
         min_generated_frames=4,
     ):
+        import debugpy
+
+        # only attach if not already attached
+        if not debugpy.is_client_connected():
+            debugpy.listen(('0.0.0.0', 5678))  # You can change the port if needed
+            print('Waiting for debugger to attach...')
+            debugpy.wait_for_client()  # This will block execution until the debugger attaches
+            print('Debugger is attached!')
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
             start_time = time.time()
@@ -2466,21 +2635,33 @@ class MagpieTTSModel(ModelPT):
                             forbid_audio_eos=forbid_audio_eos,
                         )
                     elif self.local_transformer_type == LocalTransformerType.MASKGIT:
-                        audio_codes_next = self.local_transformer_sample_maskgit(
-                            dec_output=dec_out[:, -1, :],
-                            temperature=temperature,
-                            topk=topk,
-                            unfinished_items=unfinished_items,
-                            finished_items=finished_items,
-                            use_cfg=use_cfg,
-                            cfg_scale=cfg_scale,
-                            n_steps=maskgit_n_steps,
-                            noise_scale=maskgit_noise_scale,
-                            fixed_schedule=maskgit_fixed_schedule,
-                            dynamic_cfg_scale=maskgit_dynamic_cfg_scale,
-                            sampling_type=maskgit_sampling_type,
-                            forbid_audio_eos=forbid_audio_eos,
-                        )
+                        if maskgit_sampling_type == "entropy":
+                            audio_codes_next = self.local_transformer_sample_maskgit_with_entropy(
+                                dec_output=dec_out[:, -1, :],
+                                temperature=temperature,
+                                topk=topk,
+                                unfinished_items=unfinished_items,
+                                finished_items=finished_items,
+                                use_cfg=use_cfg,
+                                cfg_scale=cfg_scale,
+                                forbid_audio_eos=forbid_audio_eos,
+                            )
+                        else:
+                            audio_codes_next = self.local_transformer_sample_maskgit(
+                                dec_output=dec_out[:, -1, :],
+                                temperature=temperature,
+                                topk=topk,
+                                unfinished_items=unfinished_items,
+                                finished_items=finished_items,
+                                use_cfg=use_cfg,
+                                cfg_scale=cfg_scale,
+                                n_steps=maskgit_n_steps,
+                                noise_scale=maskgit_noise_scale,
+                                fixed_schedule=maskgit_fixed_schedule,
+                                dynamic_cfg_scale=maskgit_dynamic_cfg_scale,
+                                sampling_type=maskgit_sampling_type,
+                                forbid_audio_eos=forbid_audio_eos,
+                            )
                     else:
                         raise ValueError(
                             f"Local transformer inference requested by but local transformer type is {self.local_transformer_type}"

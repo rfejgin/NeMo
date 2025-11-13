@@ -68,4 +68,9 @@ dataset_meta_info = {
         'audio_dir': '/',
         'feature_dir': None,
     },
+    'riva_text_context': {
+        'manifest_path': '/datap/misc/speechllm_codecdatasets_new/manifests/t5_exp/riva_text_context_lindy_rodney.json',
+        'audio_dir': '/Data/RIVA-TTS-old/en',
+        'feature_dir': '/Data/RIVA-TTS-old/en',
+    },
 }

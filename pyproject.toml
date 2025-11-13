@@ -18,7 +18,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nemo-toolkit"
-dynamic = ["dependencies", "optional-dependencies", "version"]
+#dynamic = ["dependencies", "optional-dependencies", "version"]
+dynamic = ["version"]
 description = "NeMo - a toolkit for Conversational AI"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -58,6 +59,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Libraries",
     "Topic :: Utilities",
+]
+dependencies = [
+    "pyzmq>=27.1.0",
 ]
 
 [tool.setuptools]

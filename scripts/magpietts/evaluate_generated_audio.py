@@ -32,7 +32,6 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.models import AudioCodecModel
-from nemo.collections.tts.modules.fcd_metric import FrechetCodecDistance
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 
@@ -231,7 +230,7 @@ def evaluate(
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
 
-    if codecmodel_path is not None:
+    if False:  # and codecmodel_path is not None:
         codec = AudioCodecModel.restore_from(codecmodel_path, strict=False)
         codec = codec.to(device)
         codec.eval()

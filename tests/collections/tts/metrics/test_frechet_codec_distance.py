@@ -15,8 +15,8 @@
 import pytest
 import torch
 
+from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.collections.tts.models import AudioCodecModel
-from nemo.collections.tts.modules.fcd_metric import FrechetCodecDistance
 
 
 class TestFrechetCodecDistance:
@@ -30,8 +30,7 @@ class TestFrechetCodecDistance:
 
     @pytest.fixture
     def metric(self, codec, device):
-        codec_feature_dim = codec.vector_quantizer.codebook_dim
-        return FrechetCodecDistance(codec=codec, feature_dim=codec_feature_dim).to(device)
+        return FrechetCodecDistance(codec=codec).to(device)
 
     @pytest.mark.unit
     def test_same_distribution(self, metric, device, codec):

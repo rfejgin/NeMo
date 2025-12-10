@@ -31,6 +31,7 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
@@ -230,15 +231,11 @@ def evaluate(
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
 
-    if False:  # and codecmodel_path is not None:
+    if codecmodel_path is not None:
         codec = AudioCodecModel.restore_from(codecmodel_path, strict=False)
         codec = codec.to(device)
         codec.eval()
-        # The FCD metric measures a distance between generated and real codec frames. The distance
-        # is measured in the codec's embedding space. `codec_feature_dim` is the size of the codec's embedding vector.
-        # For example, for a group-FSQ codec with 8 codebooks with 4 values in each codebook, the embedding dimension is 8 x 4 = 32.
-        codec_feature_dim = codec.vector_quantizer.codebook_dim
-        fcd_metric = FrechetCodecDistance(codec=codec, feature_dim=codec_feature_dim).to(device)
+        fcd_metric = FrechetCodecDistance(codec=codec).to(device)
     else:
         print("No codec model provided, skipping FCD metric")
         fcd_metric = None

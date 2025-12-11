@@ -53,4 +53,9 @@ dataset_meta_info = {
         'audio_dir': '/',
         'feature_dir': None,
     },
+    'libri_unseen_tiny': {
+        'manifest_path': '/Data/evaluation_manifests/libri_unseen_tiny.json',
+        'audio_dir': '/Data/LibriTTS',
+        'feature_dir': '/Data/LibriTTS',
+    },
 }

@@ -283,8 +283,6 @@ class AudioCodecModel(ModelPT):
                 del state_dict[key]
             if key.startswith("slm_encoder."):
                 del state_dict[key]
-            if key.startswith("slm_encoder."):
-                del state_dict[key]
 
         super().load_state_dict(state_dict, strict=False)
 

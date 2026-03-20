@@ -178,14 +178,16 @@ class SLMDiscriminator(NeuralModule):
 
 
 class SLMEncoder(NeuralModule):
-    """SLM Encoder
+    """Encoder wrapping a speech language model (SLM) which produces semantic embeddings for use in semantic distillation.
 
     Args:
-        slm_model_name: Hugging Face Speech Language Models name.
-        slm_sr: Speech Language Models input sampling rate.
-        input_sr: Audio input sampling rate.
-        padding: Audio padding to add before encoding
-
+        slm_model_name: Name of Hugging Face model.
+        slm_sr: Sample rate SLM model requires for input.
+        input_sr: Sampling rate of audio that will be input to this encoder.
+        hidden_layer: Index of hidden layer to extract embeddings from.
+            Defaults to 16, which for research suggests is effective for w2v-bert and TTS.
+        padding: Number of audio samples to pad before encoding to ensure output has a frame rate compatible with the audio codec.
+        scaling_factor: Constant factor to scale output embedding by.
     """
 
     def __init__(
@@ -195,7 +197,7 @@ class SLMEncoder(NeuralModule):
         input_sr=22050,
         hidden_layer=16,
         padding=80,
-        scaling_factor=5.0
+        scaling_factor=5.0,
     ):
         super().__init__()
 
@@ -231,7 +233,9 @@ class SLMEncoder(NeuralModule):
             audio = self.resample(audio)
 
         audio = torch.nn.functional.pad(audio, (0, self.padding))
-        feats = self.feature_extractor(audio.cpu(), sampling_rate=self.slm_sr, return_tensors="pt").data['input_features']
+        feats = self.feature_extractor(audio.cpu(), sampling_rate=self.slm_sr, return_tensors="pt").data[
+            'input_features'
+        ]
         feats = feats.to(audio.device)
 
         with torch.no_grad():
@@ -244,6 +248,19 @@ class SLMEncoder(NeuralModule):
 
 
 class SLMDecoder(NeuralModule):
+    """Decoder for predicting SLM embeddings for semantic distillation. This decoder uses transposed convolutions to upsample from
+    the codecs frame rate to the frame rate of the SLM model.
+
+    Args:
+        in_channels: Input dimension of quantized codec encoding.
+        hidden_dim: Hidden dimension that input will be projected to.
+        out_channels: Dimension of decoder embedding
+        up_sample_rate: Rate to up sample by to match SLM frame rate.
+        kernel_size:  Kernel size of convolutions.
+        padding_mode:  Padding used with convolutions.
+        activation: Activation to use in between convolutions
+    """
+
     def __init__(
         self,
         in_channels: int,
@@ -275,16 +292,19 @@ class SLMDecoder(NeuralModule):
         if up_sample_rate > 1:
             up_kernel_size = 2 * up_sample_rate
             up_padding, output_padding = get_up_sample_padding(up_kernel_size, up_sample_rate)
-            self.upsample_layer = nn.ConvTranspose1d(
-                in_channels=hidden_dim,
-                out_channels=hidden_dim,
-                kernel_size=up_kernel_size,
-                stride=up_sample_rate,
-                padding=up_padding,
-                output_padding=output_padding,
+            self.upsample_layer = nn.Sequential(
+                nn.ConvTranspose1d(
+                    in_channels=hidden_dim,
+                    out_channels=hidden_dim,
+                    kernel_size=up_kernel_size,
+                    stride=up_sample_rate,
+                    padding=up_padding,
+                    output_padding=output_padding,
+                ),
+                self.activation,
             )
         else:
-            self.upsample_layer = None
+            self.upsample_layer = nn.Identity()
 
     @property
     def input_types(self):
@@ -302,9 +322,8 @@ class SLMDecoder(NeuralModule):
     def forward(self, inputs):
         out = self.input_layer(inputs)
         out = self.activation(out)
-        if self.upsample_layer is not None:
-            out = self.upsample_layer(out)
-            out = self.activation(out)
+        out = self.upsample_layer(out)
+        out = self.activation(out)
         out = self.output_layer(out)
         return out
 

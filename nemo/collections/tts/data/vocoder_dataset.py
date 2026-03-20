@@ -16,7 +16,7 @@ import io
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import librosa
 import soundfile as sf
@@ -57,7 +57,7 @@ class DatasetSample:
     audio_dir: Path
 
 
-def audio_collate_fn(batch: List[dict], resample_rates=None):
+def audio_collate_fn(batch: List[dict], resample_rates: Optional[Tuple[int]] = None):
     dataset_name_list = []
     audio_filepath_list = []
     audio_list = []
@@ -76,7 +76,10 @@ def audio_collate_fn(batch: List[dict], resample_rates=None):
 
     if resample_rates:
         batch_audio, batch_audio_len = resample_batch(
-            audio=batch_audio, audio_len=batch_audio_len, input_sample_rate=resample_rates[0], output_sample_rate=resample_rates[1]
+            audio=batch_audio,
+            audio_len=batch_audio_len,
+            input_sample_rate=resample_rates[0],
+            output_sample_rate=resample_rates[1],
         )
 
     batch_dict = {

@@ -26,6 +26,7 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.audio.parts.utils.transforms import Resample
+from nemo.collections.tts.data.vocoder_dataset import VocoderDataset
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
     MultiResolutionMelLoss,
@@ -134,6 +135,7 @@ class AudioCodecModel(ModelPT):
         else:
             self.semantic_codec = None
 
+        # Optional config for using semantic distillation loss
         self.use_slm_loss = cfg.get("use_slm_loss", False)
         if self.use_slm_loss:
             self.slm_encoder = instantiate(cfg.get("slm_encoder"))
@@ -265,7 +267,7 @@ class AudioCodecModel(ModelPT):
         for key in list(state_dict.keys()):
             if self.use_scl_loss and "speaker_encoder." in key:
                 del state_dict[key]
-            if "discriminator" in key and ".slm_model.ssl_model." in key:
+            if "discriminator" in key and ".slm_model.slm_model." in key:
                 del state_dict[key]
             if key.startswith("slm_encoder."):
                 del state_dict[key]
@@ -277,7 +279,9 @@ class AudioCodecModel(ModelPT):
         for key in list(state_dict.keys()):
             if self.use_scl_loss and "speaker_encoder." in key:
                 del state_dict[key]
-            if "discriminator" in key and ".slm_model.ssl_model." in key:
+            if "discriminator" in key and ".slm_model.slm_model." in key:
+                del state_dict[key]
+            if key.startswith("slm_encoder."):
                 del state_dict[key]
             if key.startswith("slm_encoder."):
                 del state_dict[key]
@@ -320,7 +324,9 @@ class AudioCodecModel(ModelPT):
         if not sample_rate:
             sample_rate = self.sample_rate
 
-        audio_preprocessed, audio_preprocessed_len = self.preprocess_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+        audio_preprocessed, audio_preprocessed_len = self.preprocess_audio(
+            audio=audio, audio_len=audio_len, sample_rate=sample_rate
+        )
         encoded, encoded_len = self.audio_encoder(audio=audio_preprocessed, audio_len=audio_preprocessed_len)
 
         if self.semantic_codec is not None:
@@ -570,13 +576,13 @@ class AudioCodecModel(ModelPT):
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
 
         if self.training and self.use_slm_loss:
-            ssl_emb = self.slm_encoder(audio=audio)
-            ssl_emb_pred = self.slm_decoder(inputs=encoded)
+            slm_emb = self.slm_encoder(audio=audio)
+            slm_emb_pred = self.slm_decoder(inputs=encoded)
         else:
-            ssl_emb = None
-            ssl_emb_pred = None
+            slm_emb = None
+            slm_emb_pred = None
 
-        return audio, audio_len, audio_gen, commit_loss, encoded, ssl_emb, ssl_emb_pred
+        return audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred
 
     @property
     def disc_update_prob(self) -> float:
@@ -600,7 +606,7 @@ class AudioCodecModel(ModelPT):
         else:
             optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss, codes, ssl_emb, ssl_emb_pred = self._process_batch(batch)
+        audio, audio_len, audio_gen, commit_loss, codes, slm_emb, slm_emb_pred = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
@@ -679,7 +685,7 @@ class AudioCodecModel(ModelPT):
                 generator_losses.append(self.mmd_time_loss_scale * loss_mmd_time)
 
         if self.use_slm_loss:
-            loss_slm = self.slm_loss_fn(input=ssl_emb_pred, target=ssl_emb)
+            loss_slm = self.slm_loss_fn(input=slm_emb_pred, target=slm_emb)
             metrics["g_loss_slm"] = loss_slm
             generator_losses.append(self.slm_loss_scale * loss_slm)
 

@@ -749,7 +749,33 @@ class AudioCodecModel(ModelPT):
         data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
         return data_loader
 
+    def _get_lhotse_dataloader(self, cfg):
+        from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+        from nemo.collections.tts.data.codec_dataset_lhotse import AudioCodecLhotseDataset
+
+        if not isinstance(cfg, DictConfig):
+            cfg = OmegaConf.create(cfg)
+        OmegaConf.set_struct(cfg, False)
+        cfg.update({"sample_rate": self.sample_rate})
+        OmegaConf.set_struct(cfg, True)
+
+        dataset = AudioCodecLhotseDataset(
+            sample_rate=self.sample_rate,
+            volume_norm=cfg.get("volume_norm", False),
+            recording_field=cfg.get("recording_field", None),
+        )
+        return get_lhotse_dataloader_from_config(
+            config=cfg,
+            global_rank=self.global_rank,
+            world_size=self.world_size,
+            dataset=dataset,
+        )
+
     def setup_training_data(self, cfg):
+        if cfg.get("use_lhotse", False):
+            self._train_dl = self._get_lhotse_dataloader(cfg)
+            return
+
         self._train_dl = self._setup_train_dataloader(cfg)
         batch_size = cfg['dataloader_params']['batch_size']
         # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
@@ -775,6 +801,9 @@ class AudioCodecModel(ModelPT):
                 )
 
     def setup_validation_data(self, cfg):
+        if cfg.get("use_lhotse", False):
+            self._validation_dl = self._get_lhotse_dataloader(cfg)
+            return
         self._validation_dl = self._setup_test_dataloader(cfg)
 
     def setup_test_data(self, cfg):

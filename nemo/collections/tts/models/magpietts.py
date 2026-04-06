@@ -144,33 +144,21 @@ class ContextTensorsOutput:
 
 @dataclass
 class ChunkedDecoderState:
-    """Tracks state during chunked speech generation (single- or multi-chunk).
+    """Mutable state for the autoregressive decoding loop in generate_speech.
 
-    This dataclass encapsulates all the mutable state variables used in the
-    autoregressive decoding loop of generate_speech, reducing parameter
-    passing and improving code organization.
-
-    Attributes:
-        audio_codes_input: Current audio codes buffer. Shape: (B, num_codebooks, T).
-        audio_codes_lens: Length of each audio sequence. Shape: (B,).
-        audio_codes_mask: Mask for audio codes. Shape: (B, T).
-        attended_timestep_counter: List of dicts tracking attention counts per timestep.
-        all_predictions: List of predicted audio code tensors.
-        chunk_end_dict: Maps batch indices to their chunk end timesteps.
-        unfinished_texts: Maps batch indices to whether text is still being processed.
-        finished_texts_counter: Maps batch indices to counts of timesteps near text end.
-        attn_prior: Current attention prior tensor. Shape: (B, 1, T_text).
+    Required fields capture per-step tensor buffers and attention tracking.
+    Collection fields default to empty and are populated during decoding.
     """
 
-    audio_codes_input: torch.Tensor
-    audio_codes_lens: torch.Tensor
-    audio_codes_mask: torch.Tensor
-    attended_timestep_counter: List[Dict[int, int]]
-    all_predictions: List[torch.Tensor]
-    chunk_end_dict: Dict[int, int]
-    unfinished_texts: Dict[int, bool]
-    finished_texts_counter: Dict[int, int]
-    attn_prior: Optional[torch.Tensor] = None
+    audio_codes_input: torch.Tensor  # (B, num_codebooks, T)
+    audio_codes_mask: torch.Tensor  # (B, T)
+    attended_timestep_counter: List[Dict[int, int]]  # per-batch attention hit counts
+
+    all_predictions: List[torch.Tensor] = field(default_factory=list)
+    chunk_end_dict: Dict[int, int] = field(default_factory=dict)
+    unfinished_texts: Dict[int, bool] = field(default_factory=dict)
+    finished_texts_counter: Dict[int, int] = field(default_factory=dict)
+    attn_prior: Optional[torch.Tensor] = None  # (B, 1, T_text)
 
 
 @dataclass
@@ -4949,16 +4937,10 @@ class MagpieTTSModel(ModelPT):
             )
             chunk_state.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
 
-            # Create decoder state object to track all local mutable state
             state = ChunkedDecoderState(
                 audio_codes_input=audio_codes_input,
-                audio_codes_lens=audio_codes_lens,
                 audio_codes_mask=audio_codes_mask,
                 attended_timestep_counter=[{} for _ in range(batch_size)],
-                all_predictions=[],
-                chunk_end_dict={},
-                unfinished_texts={},
-                finished_texts_counter={},
                 attn_prior=initial_attn_prior,
             )
             # Frame-level lengths for this chunk only: batch_idx -> number of codec frames to keep

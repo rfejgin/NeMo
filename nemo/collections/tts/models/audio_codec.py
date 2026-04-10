@@ -21,11 +21,11 @@ from typing import Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 import lhotse
-import soundfile as sf
 from einops import rearrange
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
+import soundfile as sf
 
 from nemo.collections.audio.parts.utils.transforms import Resample
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -615,6 +615,7 @@ class AudioCodecModel(ModelPT):
             debug_dir = Path(".")
             audio_0 = audio[0].detach().float().cpu().reshape(-1)[: audio_len[0].item()].numpy()
             sf.write(debug_dir / f"step_{self.global_step}_audio.wav", audio_0, self.output_sample_rate)
+
 
         metrics = {
             "global_step": self.global_step,

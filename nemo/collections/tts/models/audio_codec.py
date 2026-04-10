@@ -20,12 +20,16 @@ from typing import Iterable, List, Tuple
 
 import torch
 import torch.nn.functional as F
+import lhotse
+import soundfile as sf
 from einops import rearrange
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.audio.parts.utils.transforms import Resample
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.tts.data.audio_codec_dataset_lhotse import AudioCodecLhotseDataset
 from nemo.collections.tts.data.vocoder_dataset import VocoderDataset
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
@@ -65,11 +69,11 @@ class AudioCodecModel(ModelPT):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
-        super().__init__(cfg=cfg, trainer=trainer)
-
         # Expected sample rate for input and output audio
         self.sample_rate = cfg.sample_rate
         self.output_sample_rate = cfg.get("output_sample_rate", self.sample_rate)
+
+        super().__init__(cfg=cfg, trainer=trainer)
 
         # Number of samples of input in each audio frame that is encoded
         self.samples_per_frame = cfg.samples_per_frame
@@ -607,6 +611,10 @@ class AudioCodecModel(ModelPT):
             optim_gen, optim_disc = self.optimizers()
 
         audio, audio_len, audio_gen, commit_loss, codes, slm_emb, slm_emb_pred = self._process_batch(batch)
+        if False and self.global_rank == 0:
+            debug_dir = Path(".")
+            audio_0 = audio[0].detach().float().cpu().reshape(-1)[: audio_len[0].item()].numpy()
+            sf.write(debug_dir / f"step_{self.global_step}_audio.wav", audio_0, self.output_sample_rate)
 
         metrics = {
             "global_step": self.global_step,
@@ -787,7 +795,59 @@ class AudioCodecModel(ModelPT):
     def _setup_test_dataloader(self, cfg):
         return self.get_dataset(cfg)
 
+    def _get_lhotse_dataloader(self, cfg):
+        if not isinstance(cfg, DictConfig):
+            cfg = OmegaConf.create(cfg)
+
+        # Create the dataset
+        dataset = AudioCodecLhotseDataset(sample_rate=self.output_sample_rate)
+
+        ### Update the Lhotse configuration ###
+
+        OmegaConf.set_struct(cfg, False)
+        
+        # Set the sample rate to the output sample rate to avoid confusion.
+        # Note that this isn't enough for the Lhotse to automatically resample the audio
+        # since our audio is in a custom field ('target_audio'). We do the resampling
+        # manually in the dataset class.
+        cfg.sample_rate = self.output_sample_rate
+        # Only keep audio files that are at least `min_duration` seconds (and thereby avoid zero-padding)
+        cfg.min_duration = cfg.dataset.dataset_args.n_samples / self.output_sample_rate
+        # Randomly select a segment of `n_samples` samples from the audio
+        cfg.truncate_duration = cfg.min_duration
+        cfg.truncate_offset_type = "random"
+
+        # Low pass augmentation
+        if cfg.get("use_lowpass_augmentation", False):
+            # Set the resampling backend to sox to is needed for low pass augmentation
+            lhotse.set_current_resampling_backend("sox")
+            cfg.lowpass_enabled = True
+            # Range of frequencies to randomly select from to use as the cutoff frequency
+            # for low pass filtering: [low, high]
+            cfg.lowpass_frequencies_interval = [4000, cfg.sample_rate // 2]
+            cfg.lowpass_prob = 0.1
+
+        # if batch_duration is not defined, derive it from batch_size and
+        # train_n_samples
+        if not hasattr(cfg, 'batch_duration'):
+            cfg.batch_duration = cfg['dataloader_params']['batch_size'] * cfg.dataset.dataset_args.n_samples / self.output_sample_rate
+            logging.info(f"Derived batch duration: {cfg.batch_duration} seconds")
+        
+        OmegaConf.set_struct(cfg, True)
+
+        # Create the dataloader
+        return get_lhotse_dataloader_from_config(
+            config=cfg,
+            global_rank=self.global_rank,
+            world_size=self.world_size,
+            dataset=dataset,
+        )
+
     def setup_training_data(self, cfg):
+        if cfg.get("use_lhotse", False):
+            self._train_dl = self._get_lhotse_dataloader(cfg)
+            return
+
         self._train_dl = self._setup_train_dataloader(cfg)
         batch_size = cfg['dataloader_params']['batch_size']
         # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
@@ -813,6 +873,9 @@ class AudioCodecModel(ModelPT):
                 )
 
     def setup_validation_data(self, cfg):
+        if cfg.get("use_lhotse", False):
+            self._validation_dl = self._get_lhotse_dataloader(cfg)
+            return
         self._validation_dl = self._setup_test_dataloader(cfg)
 
     def setup_test_data(self, cfg):

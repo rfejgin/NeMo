@@ -813,7 +813,7 @@ class AudioCodecModel(ModelPT):
         # manually in the dataset class.
         cfg.sample_rate = self.output_sample_rate
         # Only keep audio files that are at least `min_duration` seconds (and thereby avoid zero-padding)
-        cfg.min_duration = cfg.dataset.dataset_args.n_samples / self.output_sample_rate
+        cfg.min_duration = cfg.n_samples / self.output_sample_rate
         # Randomly select a segment of `n_samples` samples from the audio
         cfg.truncate_duration = cfg.min_duration
         cfg.truncate_offset_type = "random"
@@ -831,7 +831,7 @@ class AudioCodecModel(ModelPT):
         # if batch_duration is not defined, derive it from batch_size and
         # train_n_samples
         if not hasattr(cfg, 'batch_duration'):
-            cfg.batch_duration = cfg['dataloader_params']['batch_size'] * cfg.dataset.dataset_args.n_samples / self.output_sample_rate
+            cfg.batch_duration = cfg['batch_size'] * cfg.n_samples / self.output_sample_rate
             logging.info(f"Derived batch duration: {cfg.batch_duration} seconds")
         
         OmegaConf.set_struct(cfg, True)

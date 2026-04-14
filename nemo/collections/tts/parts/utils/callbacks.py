@@ -384,7 +384,7 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
                 id=f"audio_out_{audio_id}",
                 data=audio_pred_i,
                 filepath=audio_pred_path,
-                sample_rate=model.sample_rate,
+                sample_rate=model.output_sample_rate,
             )
             audio_artifacts.append(audio_artifact)
 
@@ -397,7 +397,7 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
                     id=f"audio_in_{audio_id}",
                     data=audio_in_i,
                     filepath=audio_in_path,
-                    sample_rate=model.sample_rate,
+                    sample_rate=model.output_sample_rate,
                 )
                 audio_artifacts.append(audio_artifact)
 

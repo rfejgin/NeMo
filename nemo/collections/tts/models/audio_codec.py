@@ -876,11 +876,8 @@ class AudioCodecModel(ModelPT):
     def setup_validation_data(self, cfg):
         if cfg.get("use_lhotse", False):
             self._validation_dl = self._get_lhotse_dataloader(cfg)
-            return
-        self._validation_dl = self._setup_test_dataloader(cfg)
-
-    def setup_test_data(self, cfg):
-        pass
+        else:
+            self._validation_dl = self._setup_test_dataloader(cfg)
 
     @property
     def max_steps(self):

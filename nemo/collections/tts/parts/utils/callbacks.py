@@ -357,6 +357,7 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
         audio: Tensor,
         audio_len: Tensor,
         save_input: bool = False,
+        audio_sample_rate: Optional[int] = 22050,
     ):
         """Generate audio artifacts.
 
@@ -373,7 +374,7 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
 
         with torch.no_grad():
             # [B, T]
-            audio_pred, audio_pred_len = model(audio=audio, audio_len=audio_len)
+            audio_pred, audio_pred_len = model(audio=audio, audio_len=audio_len, sample_rate=audio_sample_rate)
 
         audio_artifacts = []
         # Log output audio
@@ -483,6 +484,7 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
             audio=audio,
             audio_len=audio_len,
             save_input=initial_log,
+            audio_sample_rate=model.output_sample_rate,
         )
         image_artifacts = self._generate_images(
             model=model, dataset_names=dataset_names, audio_ids=audio_ids, audio=audio, audio_len=audio_len

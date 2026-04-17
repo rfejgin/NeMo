@@ -620,6 +620,7 @@ class AudioCodecModel(ModelPT):
         metrics = {
             "global_step": self.global_step,
             "lr": optim_gen.param_groups[0]['lr'],
+            "batch_duration": batch['audio_lens'].sum() / self.output_sample_rate,
         }
 
         if optim_disc is not None and self.should_update_disc(batch_idx):
@@ -827,12 +828,6 @@ class AudioCodecModel(ModelPT):
             # for low pass filtering: [low, high]
             cfg.lowpass_frequencies_interval = [4000, cfg.sample_rate // 2]
             cfg.lowpass_prob = 0.1
-
-        # if batch_duration is not defined, derive it from batch_size and
-        # train_n_samples
-        if not hasattr(cfg, 'batch_duration'):
-            cfg.batch_duration = cfg['batch_size'] * cfg.n_samples / self.output_sample_rate
-            logging.info(f"Derived batch duration: {cfg.batch_duration} seconds")
         
         OmegaConf.set_struct(cfg, True)
 

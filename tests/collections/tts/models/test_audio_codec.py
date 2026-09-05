@@ -202,3 +202,45 @@ class TestAudioCodecModel:
             dropout_start_i = i * codec_model.vector_quantizer.codebook_dim
             dropped_codes = encoded[:, dropout_start_i:, :]
             torch.testing.assert_close(actual=dropped_codes, expected=torch.zeros_like(dropped_codes))
+
+    @pytest.mark.unit
+    def test_process_batch_returns_codes_before_codebook_dropout(self, codec_model, monkeypatch):
+        batch_size = 2
+        num_frames = 2
+        audio = torch.zeros(batch_size, 960)
+        audio_len = torch.full((batch_size,), 960, dtype=torch.long)
+        encoded_len = torch.full((batch_size,), num_frames, dtype=torch.long)
+        encoder_output = torch.zeros(batch_size, 40, num_frames)
+        full_codes = torch.ones_like(encoder_output)
+        dropped_codes = torch.zeros_like(full_codes)
+
+        monkeypatch.setattr(codec_model, 'encode_audio', Mock(return_value=(encoder_output, encoded_len)))
+        monkeypatch.setattr(
+            codec_model.vector_quantizer,
+            'forward',
+            Mock(return_value=(full_codes, torch.zeros(codec_model.num_codebooks, batch_size, num_frames))),
+        )
+        dropout_codebooks = Mock(return_value=dropped_codes)
+        monkeypatch.setattr(codec_model, '_dropout_random_codebooks', dropout_codebooks)
+        decoder_forward = Mock(return_value=(torch.zeros_like(audio), audio_len))
+        monkeypatch.setattr(codec_model.audio_decoder, 'forward', decoder_forward)
+
+        codec_model.codebook_dropout_rate = 1.0
+        codec_model.train()
+        batch = {'audio': audio, 'audio_lens': audio_len}
+
+        _, _, _, _, returned_codes, _, _ = codec_model._process_batch(batch)
+
+        torch.testing.assert_close(returned_codes, full_codes)
+        torch.testing.assert_close(decoder_forward.call_args.kwargs['inputs'], dropped_codes)
+        dropout_codebooks.assert_called_once()
+
+        decoder_forward.reset_mock()
+        dropout_codebooks.reset_mock()
+        codec_model.eval()
+
+        _, _, _, _, returned_codes, _, _ = codec_model._process_batch(batch)
+
+        torch.testing.assert_close(returned_codes, full_codes)
+        torch.testing.assert_close(decoder_forward.call_args.kwargs['inputs'], full_codes)
+        dropout_codebooks.assert_not_called()

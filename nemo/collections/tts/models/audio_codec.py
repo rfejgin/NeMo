@@ -99,6 +99,7 @@ class AudioCodecModel(ModelPT):
         if "vector_quantizer" in cfg:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
             self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
+            logging.info(f"Codebook dropout rate: {self.codebook_dropout_rate}")
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 

@@ -214,6 +214,7 @@ class TestAudioCodecModel:
         full_codes = torch.ones_like(encoder_output)
         dropped_codes = torch.zeros_like(full_codes)
 
+        # Stub each codec stage so full quantized codes can be distinguished from dropped decoder inputs.
         monkeypatch.setattr(codec_model, 'encode_audio', Mock(return_value=(encoder_output, encoded_len)))
         monkeypatch.setattr(
             codec_model.vector_quantizer,
@@ -225,6 +226,7 @@ class TestAudioCodecModel:
         decoder_forward = Mock(return_value=(torch.zeros_like(audio), audio_len))
         monkeypatch.setattr(codec_model.audio_decoder, 'forward', decoder_forward)
 
+        # During training, reconstruction uses dropped codes while representation losses receive the full codes.
         codec_model.codebook_dropout_rate = 1.0
         codec_model.train()
         batch = {'audio': audio, 'audio_lens': audio_len}
@@ -237,6 +239,8 @@ class TestAudioCodecModel:
 
         decoder_forward.reset_mock()
         dropout_codebooks.reset_mock()
+
+        # Evaluation bypasses codebook dropout, so both consumers receive the full quantized representation.
         codec_model.eval()
 
         _, _, _, _, returned_codes, _, _ = codec_model._process_batch(batch)

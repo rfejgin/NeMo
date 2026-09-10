@@ -605,11 +605,16 @@ class AudioCodecModel(ModelPT):
         else:
             commit_loss = 0.0
 
-        # Preserve the complete quantized representation in `encoded` for
-        # representation losses such as MMD.
+        mmd_inputs = encoded
         decoder_inputs = encoded
         if self.training and self.codebook_dropout_rate:
             decoder_inputs = self._dropout_random_codebooks(encoded)
+            # For MMD, the forward pass includes all pre-codebook-dropout codes, while
+            # the backward pass excludes the dropped codes. This avoids putting MMD
+            # pressure on dropped codes which would not be balanced by reconstruction
+            # losses and could therefore push the dropped dimensions in a degenerate
+            # direction, e.g. constants.
+            mmd_inputs = encoded.detach() + decoder_inputs - decoder_inputs.detach()
 
         # [B, T]
         audio_gen, _ = self.audio_decoder(inputs=decoder_inputs, input_len=encoded_len)
@@ -621,7 +626,7 @@ class AudioCodecModel(ModelPT):
             slm_emb = None
             slm_emb_pred = None
 
-        return audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred
+        return audio, audio_len, audio_gen, commit_loss, mmd_inputs, slm_emb, slm_emb_pred
 
     @property
     def disc_update_prob(self) -> float:
@@ -678,7 +683,7 @@ class AudioCodecModel(ModelPT):
         else:
             optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred = self._process_batch(batch)
+        audio, audio_len, audio_gen, commit_loss, mmd_inputs, slm_emb, slm_emb_pred = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
@@ -747,13 +752,13 @@ class AudioCodecModel(ModelPT):
             generator_losses.append(self.commit_loss_scale * commit_loss)
 
         if self.mmd_loss_scale:
-            loss_mmd = self.mmd_loss_fn(inputs=encoded)
+            loss_mmd = self.mmd_loss_fn(inputs=mmd_inputs)
             metrics["g_loss_mmd"] = loss_mmd
             if self.current_epoch >= self.mmd_loss_start_epoch:
                 generator_losses.append(self.mmd_loss_scale * loss_mmd)
 
         if self.mmd_time_loss_scale:
-            loss_mmd_time = self.mmd_time_loss_fn(inputs=encoded)
+            loss_mmd_time = self.mmd_time_loss_fn(inputs=mmd_inputs)
             metrics["g_loss_mmd_time"] = loss_mmd_time
             if self.current_epoch >= self.mmd_loss_start_epoch:
                 generator_losses.append(self.mmd_time_loss_scale * loss_mmd_time)

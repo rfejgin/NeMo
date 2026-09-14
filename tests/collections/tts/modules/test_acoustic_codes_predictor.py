@@ -180,6 +180,35 @@ def test_next_block_embeds_only_codes_predicted_by_the_previous_block():
     )
 
 
+def test_code_masking_hides_previous_block_codes_only_while_training():
+    masked = _make_predictor(mask_codes=True, mask_min=1.0, mask_max=1.0)
+    plain = _make_predictor()
+    target_codes = torch.randint(0, CODEBOOK_SIZE, (2, 5, NUM_CODES))
+    hidden_states = torch.randn(2, 5, D_MODEL)
+    lengths = torch.tensor([5, 4])
+
+    masked.eval()
+    plain.eval()
+    torch.testing.assert_close(
+        masked.compute_loss(hidden_states, target_codes, lengths),
+        plain.compute_loss(hidden_states, target_codes, lengths),
+    )
+
+    masked.embed_codes.calls.clear()
+    masked.train()
+    loss = masked.compute_loss(hidden_states, target_codes, lengths)
+    loss.backward()
+
+    assert torch.isfinite(loss) and loss > 0
+    assert len(masked.embed_codes.calls) == len(masked.blocks) - 1
+    for codebook_indices, input_codes in masked.embed_codes.calls:
+        assert codebook_indices == masked.blocks[0].codebook_indices
+        assert (input_codes == MASK_TOKEN_ID).all()
+    for block in masked.blocks:
+        assert block.codebook_projection.weight.grad is not None
+        assert torch.isfinite(block.codebook_projection.weight.grad).all()
+
+
 def test_prediction_returns_only_codec_tokens_or_audio_eos():
     predictor = _make_predictor()
     codes = predictor.predict_codes(torch.randn(3, 2, D_MODEL), temperature=0.7, topk=80)

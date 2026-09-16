@@ -28,6 +28,7 @@ from torch import nn
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters, TrainingMode
+from nemo.collections.tts.modules.magpietts_modules import AcousticCodesPredictor, LocalTransformerType
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
 
@@ -279,6 +280,18 @@ def test_audio_and_text_embedding_shapes(model):
     assert audio_embedded.shape == (2, 3, model.cfg.embedding_dim)
     assert audio_embedded.dtype == torch.float32
     assert torch.isfinite(audio_embedded).all()
+
+    codebook_indices = (1, 5)
+    selected_tokens = audio_tokens[:, list(codebook_indices), :]
+    selected_embedded = model.embed_audio_tokens(selected_tokens, codebook_indices=codebook_indices)
+    expected_embedded = model.audio_in_projection(
+        (
+            model.audio_embeddings[codebook_indices[0]](selected_tokens[:, 0, :])
+            + model.audio_embeddings[codebook_indices[1]](selected_tokens[:, 1, :])
+        )
+        / len(codebook_indices)
+    )
+    torch.testing.assert_close(selected_embedded, expected_embedded)
 
     text_tokens, text_lens = _padded_token_tensor(model, ["abc", "de"])
     text_embedded = model.embed_text_tokens(text_tokens, text_lens=text_lens)
@@ -532,3 +545,126 @@ def test_validation_step_smoke(model, toy_batch, tmp_path):
     assert torch.isfinite(output["val_codebook_loss"])
     assert output["val_local_transformer_loss"] is None
     assert model.validation_step_outputs[-1] == output
+
+
+def test_acoustic_codes_predictor_requires_no_local_transformer():
+    cfg = tiny_easy_magpie_cfg(
+        {
+            "local_transformer_type": "autoregressive",
+            "local_transformer_hidden_dim": 32,
+            "acoustic_codes_predictor": True,
+            "acoustic_codes_predictor_schedule": [8],
+        }
+    )
+    with pytest.raises(AssertionError, match="local_transformer_type=none"):
+        _make_easy_magpie_model(cfg)
+
+
+def test_acoustic_codes_predictor_process_batch_with_frame_stacking():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "frame_stacking_factor": 2,
+                "acoustic_codes_predictor": True,
+                "acoustic_codes_predictor_schedule": [4, 12],
+                "use_user_speaking_token": True,
+            }
+        )
+    )
+    batch = _toy_batch(model)
+
+    output = model.process_batch(
+        text=batch["text"],
+        text_lens=batch["text_lens"],
+        context_text_tokens=batch["context_text_tokens"],
+        context_text_tokens_lens=batch["context_text_tokens_lens"],
+        audio_codes=batch["audio_codes"],
+        audio_codes_lens=batch["audio_codes_lens"],
+        context_audio_codes=batch["context_audio_codes"],
+        context_audio_codes_lens=batch["context_audio_codes_lens"],
+        mode="val",
+        training_mode=model.training_modes[0],
+        agent_mask=batch["agent_mask"],
+    )
+
+    predicted = model.acoustic_codes_predictor.predict_codes(
+        torch.randn(2, 1, model.cfg.hidden_dim),
+        temperature=0.0,
+    )
+
+    assert model.local_transformer_type == LocalTransformerType.NO_LT
+    assert model.acoustic_codes_predictor.num_audio_codebooks == 2 * model.num_audio_codebooks
+    assert predicted.shape == (2, 1, 2 * model.num_audio_codebooks)
+    assert output.audio_codes_target.size(1) == 2 * model.num_audio_codebooks
+    assert torch.isfinite(output.acoustic_codes_predictor_loss)
+    assert torch.isfinite(output.loss)
+
+
+def test_acoustic_codes_predictor_loss_mask_uses_audio_delay():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "acoustic_codes_predictor": True,
+                "acoustic_codes_predictor_schedule": [2, 6],
+            }
+        )
+    )
+    audio_codes_target = _toy_codes(model, batch_size=2, num_frames=4)
+    audio_codes_lens_target = torch.tensor([4, 3])
+    audio_delay = torch.tensor([2, 1])
+    loss_mask = torch.tensor(
+        [
+            [True, False, True, False],
+            [False, True, True, False],
+        ]
+    )
+
+    _, aligned = model._acoustic_codes_predictor_targets(
+        num_positions=7,
+        audio_codes_target=audio_codes_target,
+        audio_codes_lens_target=audio_codes_lens_target,
+        audio_delay=audio_delay,
+        loss_mask=loss_mask,
+    )
+
+    expected = torch.zeros(2, 7, dtype=torch.bool)
+    expected[0, 2:6] = loss_mask[0]
+    expected[1, 1:4] = loss_mask[1, :3]
+    torch.testing.assert_close(aligned, expected)
+
+
+@pytest.mark.parametrize("use_cfg", [False, True], ids=["no_cfg", "cfg"])
+def test_acoustic_codes_predictor_cache_keeps_up_with_backbone(use_cfg):
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "acoustic_codes_predictor": True,
+                "acoustic_codes_predictor_schedule": [2, 6],
+            }
+        )
+    )
+    batch = _toy_batch(model)
+    state = model.streaming_init(
+        context_audio_codes=batch["context_audio_codes"],
+        context_audio_codes_lens=batch["context_audio_codes_lens"],
+        context_text_tokens=batch["context_text_tokens"],
+        context_text_tokens_lens=batch["context_text_tokens_lens"],
+        use_cfg=use_cfg,
+        cfg_scale=2.5 if use_cfg else 1.0,
+    )
+
+    assert AcousticCodesPredictor.cached_frames(state.acoustic_codes_predictor_cache) == state.cache_seq_len
+    expected_cache_batch = 2 * state.config.batch_size if use_cfg else state.config.batch_size
+    first_cache = state.acoustic_codes_predictor_cache[0]
+    first_attention_layer = first_cache.transformer_layers[0]
+    assert first_cache.key_cache[first_attention_layer].size(0) == expected_cache_batch
+
+    for step in range(8):
+        state, _, _ = model.streaming_step(
+            state,
+            text_tokens=batch["text"][:, min(step, batch["text"].size(1) - 1)],
+        )
+        assert AcousticCodesPredictor.cached_frames(state.acoustic_codes_predictor_cache) == state.cache_seq_len
+
+    model.streaming_finalize(state)
+    assert state.acoustic_codes_predictor_cache is None

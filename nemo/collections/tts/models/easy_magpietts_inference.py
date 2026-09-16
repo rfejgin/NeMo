@@ -37,6 +37,7 @@ from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
 from nemo.collections.tts.modules.magpietts_modules import (
+    AcousticCodesPredictor,
     CharAwareSubwordEncoder,
     CodecHelper,
     LocalTransformerHelper,
@@ -162,6 +163,7 @@ class StreamingState:
     gt_phoneme_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
     gt_audio_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
+    acoustic_codes_predictor_cache: Optional[List] = None
 
 
 @dataclass
@@ -658,6 +660,31 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 codebook_size=self.codebook_size,
             )
 
+        self.acoustic_codes_predictor_enabled = bool(cfg.get('acoustic_codes_predictor', False))
+        self.acoustic_codes_predictor = None
+        if self.acoustic_codes_predictor_enabled:
+            assert (
+                self.local_transformer_type == LocalTransformerType.NO_LT
+            ), "acoustic_codes_predictor requires local_transformer_type=none"
+            assert self.decoder_type == 'nemotron_h', "acoustic_codes_predictor requires a Nemotron-H backbone"
+            prediction_schedule = cfg.get('acoustic_codes_predictor_schedule', None)
+            assert prediction_schedule is not None, "acoustic_codes_predictor_schedule must be configured"
+            total_audio_codes = self.num_audio_codebooks * self.frame_stacking_factor
+            assert sum(prediction_schedule) == total_audio_codes, (
+                f"acoustic_codes_predictor_schedule predicts {sum(prediction_schedule)} codes, "
+                f"expected {total_audio_codes}"
+            )
+            self.acoustic_codes_predictor = AcousticCodesPredictor(
+                backbone_config=self.decoder.config,
+                embed_codes=self.embed_audio_tokens,
+                num_audio_codebooks=total_audio_codes,
+                audio_eos_id=self.audio_eos_id,
+                mask_token_id=self.mask_token_id,
+                codebook_size=self.codebook_size,
+                prediction_schedule=prediction_schedule,
+                n_layers=cfg.get('acoustic_codes_predictor_n_layers', 1),
+            )
+
     @property
     def codec_sil_codes(self):
         """Return the representative silence codes in the active codec codebook space."""
@@ -834,6 +861,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.past_key_values = out.past_key_values
             state.cache_seq_len += T
             state.last_hidden = out.last_hidden_state
+            self._advance_acoustic_codes_predictor(state, frames=T)
 
             # Advance logical streams consumed by this profile prefill.
             state.text_tokens_seen += T
@@ -945,20 +973,30 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes = codes[:, :, : codes_len.max()]
         return codes, codes_len
 
-    def embed_audio_tokens(self, audio_tokens):
+    def embed_audio_tokens(self, audio_tokens, codebook_indices=None):
         # audio_tokens: (B, C, T')
         # Add and average the embeddings of the audio tokens across the codebooks
         """Embed and average audio-code tokens across codebook channels.
 
         Args:
             audio_tokens: Audio token IDs shaped ``(B, C, T)``.
+            codebook_indices: Global codebook index for each input channel. Defaults to
+                the first ``C`` codebooks for existing callers that pass all channels.
 
         Returns:
             Audio embeddings shaped ``(B, T, E)``.
         """
+        if codebook_indices is None:
+            codebook_indices = range(audio_tokens.size(1))
+        else:
+            codebook_indices = tuple(codebook_indices)
+            assert len(codebook_indices) == audio_tokens.size(
+                1
+            ), f"received {audio_tokens.size(1)} code channels but {len(codebook_indices)} codebook indices"
+
         audio_embedding = None
-        for c in range(audio_tokens.size(1)):
-            embedding = self.audio_embeddings[c](audio_tokens[:, c, :])
+        for input_idx, codebook_idx in enumerate(codebook_indices):
+            embedding = self.audio_embeddings[codebook_idx](audio_tokens[:, input_idx, :])
             if audio_embedding is None:
                 audio_embedding = embedding
             else:
@@ -1716,6 +1754,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 gt_audio_lens=gt_audio_lens_state,
             )
 
+            if self.acoustic_codes_predictor_enabled:
+                assert self.acoustic_codes_predictor is not None
+                state.acoustic_codes_predictor_cache = self.acoustic_codes_predictor.make_cache(
+                    batch_size=last_hidden.size(0), device=device, dtype=last_hidden.dtype
+                )
+                self._advance_acoustic_codes_predictor(state, frames=last_hidden.size(1))
+
             return state
 
     def streaming_step(
@@ -1791,6 +1836,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.cache_seq_len += 1
 
             if prefill_like_step:
+                self._advance_acoustic_codes_predictor(state)
                 # Advance logical streams, keep audio silent, but predict phonemes if enabled.
                 state.context_position += needs_context.long()
                 state.text_tokens_seen += (~needs_context).long()
@@ -2140,7 +2186,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     state.audio_prediction_start_idx,
                 )
 
-            audio_codes_next_stacked, all_codes_next_argmax = self._predict_audio_codes(state)  # (B, C*S)
+            audio_codes_next_stacked, all_codes_next_argmax = self._predict_audio_codes(
+                state, needs_audio=needs_audio
+            )  # (B, C*S)
 
             S = self.frame_stacking_factor
             C = self.num_audio_codebooks
@@ -2179,6 +2227,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             state.all_predictions.append(audio_codes_unstacked)
             audio_codes_next = audio_codes_unstacked
+        else:
+            self._advance_acoustic_codes_predictor(state)
 
         # Force-finish items when GT audio is exhausted (teacher forcing)
         if state.gt_audio_embeddings is not None and state.gt_audio_lens is not None:
@@ -2232,10 +2282,37 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # (B, phoneme_stacking_factor)
         return pred_phoneme_tokens
 
-    def _predict_audio_codes(self, state: StreamingState) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _advance_acoustic_codes_predictor(self, state: StreamingState, frames: int = 1) -> None:
+        """Populate predictor caches for backbone positions that do not predict audio."""
+        if state.acoustic_codes_predictor_cache is None:
+            return
+        assert self.acoustic_codes_predictor is not None
+        self.acoustic_codes_predictor.advance(
+            state.last_hidden[:, -frames:, :],
+            cache=state.acoustic_codes_predictor_cache,
+        )
+
+    def _predict_audio_codes(
+        self, state: StreamingState, needs_audio: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict audio codes from the last hidden state."""
         actual_batch_size = state.config.batch_size
         last_hidden = state.last_hidden
+
+        if self.acoustic_codes_predictor_enabled:
+            assert self.acoustic_codes_predictor is not None
+            audio_codes_next = self.acoustic_codes_predictor.predict_codes(
+                hidden_states=last_hidden[:, -1:, :],
+                cache=state.acoustic_codes_predictor_cache,
+                temperature=state.config.temperature,
+                topk=state.config.topk,
+                use_cfg=state.config.use_cfg,
+                cfg_scale=state.config.cfg_scale,
+                sanitize_logits=True,
+                predict=needs_audio,
+            )
+            audio_codes_next = audio_codes_next.squeeze(1)
+            return audio_codes_next, audio_codes_next
 
         # Compute audio logits
         last_hidden_audio = self.audio_out_projection(last_hidden[:, -1, :])
@@ -2281,6 +2358,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         """
         batch_size = state.config.batch_size
         device = state.config.device
+        state.acoustic_codes_predictor_cache = None
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []

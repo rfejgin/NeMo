@@ -304,6 +304,45 @@ def test_audio_and_text_embedding_shapes(model):
     assert torch.isfinite(text_embedded).all()
 
 
+def test_feature_masking_hides_the_audio_history_only():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "feature_masking": {
+                    "_target_": "nemo.collections.tts.modules.magpietts_modules.FeatureMasking",
+                    "hidden_size": 32,
+                    "mask_min": 1.0,
+                    "mask_max": 1.0,
+                }
+            }
+        )
+    )
+    with torch.no_grad():
+        model.feature_masking.masked_emb.fill_(7.0)
+    masked_emb = model.feature_masking.masked_emb[0, 0]
+    delay = torch.tensor([2, 0], dtype=torch.long)
+
+    model.train()
+    embedded, channel_lens, _, target_lens, _ = model.prepare_audio_channel_embeddings(
+        audio_codes=_toy_codes(model, batch_size=2, num_frames=4),
+        audio_codes_lens=torch.tensor([4, 3], dtype=torch.long),
+        delay=delay,
+        dropout_audio_conditioning=True,
+    )
+
+    for item in range(2):
+        start = int(delay[item])
+        end = start + int(target_lens[item])
+        assert int(channel_lens[item]) == end
+        # The delay region holds no audio history, so there is nothing there to hide.
+        torch.testing.assert_close(embedded[item, :start], torch.zeros(start, model.cfg.embedding_dim))
+        # The history opens on audio BOS, a token inference always provides.
+        assert not torch.allclose(embedded[item, start], masked_emb)
+        # Every remaining history frame is codec tokens, which are all hidden at a share of one.
+        for frame in range(start + 1, end):
+            torch.testing.assert_close(embedded[item, frame], masked_emb)
+
+
 def _codec_latent_cfg(overrides=None):
     cfg = {"use_codec_latent_audio_embedding": True}
     cfg.update(overrides or {})

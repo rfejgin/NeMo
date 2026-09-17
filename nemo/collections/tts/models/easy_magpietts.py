@@ -830,6 +830,15 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         # Embed audio tokens
         audio_embedded = self.embed_audio_tokens(audio_codes_input)  # (B, T'-1, E)
 
+        if dropout_audio_conditioning:
+            # Hide frames of the audio history only. The delay region carries no history, and the
+            # special tokens marking BOS, EOS and user speech are always given at inference, so
+            # only frames whose every channel holds a codec token may be hidden.
+            maskable = (audio_codes_input < self.codebook_size).all(dim=1)
+            audio_embedded = self.feature_masking(
+                inputs=audio_embedded, input_len=audio_codes_lens_target, maskable=maskable
+            )
+
         # Create zero tensor for delay padding
         max_delay = delay.max().item()
         zero_delay_tensor = torch.zeros(batch_size, max_delay, self.cfg.embedding_dim, device=device)
@@ -839,11 +848,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             embeddings=[zero_delay_tensor, audio_embedded],
             lengths=[delay, audio_codes_lens_target],
         )
-
-        if dropout_audio_conditioning:
-            audio_channel_embedding = self.feature_masking(
-                inputs=audio_channel_embedding, input_len=audio_channel_lens
-            )
 
         return (
             audio_channel_embedding,

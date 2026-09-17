@@ -262,6 +262,12 @@ def _lt_sample_autoregressive(
         `(batch_size, num_audio_codebooks, frame_stacking_factor)` and the
         corresponding CFG logits for the conditional batch.
     """
+    # TODO: embed the sampled codes through `model._lt_helper.embed_codebook` so that this path also
+    # supports models embedding codes from the codec latents rather than from per-codebook tables.
+    assert not model.use_codec_latent_audio_embedding, (
+        "CFG distillation embeds sampled codes straight from the audio embedding tables, which "
+        "`use_codec_latent_audio_embedding` replaces with a projection of the codec latents"
+    )
     model.local_transformer.reset_cache(use_cache=use_kv_cache)
     dec_output = dec_output.unsqueeze(1)
     local_transformer_input = model.local_transformer_in_projection(dec_output)

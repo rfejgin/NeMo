@@ -1033,9 +1033,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         """Embed the codes of a single stacked codebook channel, for the local transformer.
 
         Only available when ``use_codec_latent_audio_embedding`` is set: the table-based path
-        embeds a single channel by indexing ``audio_embeddings`` directly. The result is the
-        contribution this channel makes to :meth:`embed_audio_tokens`, so a frame embedded one
-        channel at a time and a frame embedded at once stay in the same space.
+        embeds a single channel by indexing ``audio_embeddings`` directly. The channel reads its
+        own slice of the projection, so it lands in the same space as :meth:`embed_audio_tokens`,
+        but it carries the projection bias that a whole frame carries only once. Summing every
+        channel therefore overshoots the whole frame by ``num_channels - 1`` biases.
 
         Args:
             channel_index: Stacked channel to embed, ``codebook * frame_stacking_factor + frame``.
@@ -1044,6 +1045,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         Returns:
             Audio embeddings shaped ``(*codes.shape, E)``.
         """
+        num_channels = self.num_audio_codebooks * self.frame_stacking_factor
+        assert 0 <= channel_index < num_channels, f"channel {channel_index} outside the {num_channels} channels"
         is_special = (codes >= self.codebook_size).unsqueeze(-1)
 
         latent = self._decode_codebook_latent(channel_index // self.frame_stacking_factor, codes)
@@ -1154,7 +1157,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes: Audio token IDs shaped ``(B, C, T)``.
 
         Returns:
-            Codec latents shaped ``(B, C, T, codec_latent_dim)``.
+            Codec latents shaped ``(B, C, T, codec_latent_dim)``, in the projection's dtype.
         """
         batch_size, num_codebooks, num_frames = codes.shape
         # Special tokens get their own feature slots, so the lookup only has to stay in range here.
@@ -1164,6 +1167,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             latent = self._audio_code_quantizer.decode(
                 indices=codec_codes.permute(1, 0, 2), input_len=input_len
             )  # (B, C * codec_latent_dim, T)
+        # The quantizer dequantizes in float32 regardless of the trainer's precision.
+        latent = latent.to(self.audio_code_projection.weight.dtype)
         return latent.reshape(batch_size, num_codebooks, self.codec_latent_dim, num_frames).permute(0, 1, 3, 2)
 
     def _decode_codebook_latent(self, codebook_index: int, codes: torch.Tensor) -> torch.Tensor:
@@ -1174,8 +1179,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes: Audio token IDs of that codebook, of any shape.
 
         Returns:
-            Codec latents shaped ``(*codes.shape, codec_latent_dim)``.
+            Codec latents shaped ``(*codes.shape, codec_latent_dim)``, in the projection's dtype.
         """
+        assert (
+            0 <= codebook_index < self.num_audio_codebooks
+        ), f"codebook {codebook_index} outside the codec's {self.num_audio_codebooks} codebooks"
         quantizer = self._audio_code_quantizer
         if isinstance(quantizer, GroupFiniteScalarQuantizer):
             quantizer = quantizer.fsqs[codebook_index]
@@ -1184,6 +1192,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         input_len = torch.ones(codec_codes.size(1), dtype=torch.long, device=codes.device)
         with torch.no_grad():
             latent = quantizer.decode(indices=codec_codes, input_len=input_len)  # (N, codec_latent_dim, 1)
+        # The quantizer dequantizes in float32 regardless of the trainer's precision.
+        latent = latent.to(self.audio_code_projection.weight.dtype)
         return latent.reshape(tuple(codes.shape) + (self.codec_latent_dim,))
 
     def embed_text_tokens(
@@ -2481,6 +2491,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         if self.acoustic_codes_predictor_enabled:
             assert self.acoustic_codes_predictor is not None
+            assert (
+                state.acoustic_codes_predictor_cache is not None
+            ), "acoustic_codes_predictor has no cache; the streaming state was never initialized or already finalized"
             audio_codes_next = self.acoustic_codes_predictor.predict_codes(
                 hidden_states=last_hidden[:, -1:, :],
                 cache=state.acoustic_codes_predictor_cache,
@@ -2492,6 +2505,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 predict=needs_audio,
             )
             audio_codes_next = audio_codes_next.squeeze(1)
+            # TODO @rfejgin: should we add argmax sampling for EOS here too?
             return audio_codes_next, audio_codes_next
 
         # Compute audio logits

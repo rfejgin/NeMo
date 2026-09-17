@@ -841,7 +841,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
         if dropout_audio_conditioning:
-            audio_channel_embedding = self.feature_masking.apply_dropout(
+            audio_channel_embedding = self.feature_masking(
                 inputs=audio_channel_embedding, input_len=audio_channel_lens
             )
 
@@ -1304,6 +1304,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 target_codes=predictor_targets,
                 lengths=combined_channel_lens,
                 loss_mask=predictor_loss_mask,
+                feature_masking=self.feature_masking if dropout_audio_conditioning else None,
             )
             loss = loss + self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
 

@@ -32,7 +32,6 @@ from nemo.collections.tts.modules.magpietts_modules import (
     AcousticCodesPredictor,
     LocalTransformerType,
     SpecialAudioToken,
-    create_feature_mask,
 )
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
@@ -303,50 +302,6 @@ def test_audio_and_text_embedding_shapes(model):
     assert text_embedded.shape == (2, text_tokens.size(1), model.cfg.embedding_dim)
     assert text_embedded.dtype == torch.float32
     assert torch.isfinite(text_embedded).all()
-
-
-def test_create_feature_mask_hides_the_requested_share_of_valid_timesteps():
-    _seed_everything()
-    lengths = torch.tensor([10, 8, 4], dtype=torch.long)
-    mask = create_feature_mask(lengths, mask_min=0.5, mask_max=0.5, x=torch.zeros(3, 10))
-
-    assert mask.shape == (3, 10)
-    assert mask.dtype == torch.bool
-    assert mask.sum(dim=1).tolist() == [5, 4, 2]
-    assert not mask[1, 8:].any()
-    assert not mask[2, 4:].any()
-
-
-def test_audio_history_masking_only_applies_while_training():
-    model = _make_easy_magpie_model(
-        tiny_easy_magpie_cfg(
-            {
-                "mask_audio_history": True,
-                "audio_history_mask_min": 1.0,
-                "audio_history_mask_max": 1.0,
-            }
-        )
-    )
-    codes_kwargs = {
-        "audio_codes": _toy_codes(model, batch_size=2, num_frames=3),
-        "audio_codes_lens": torch.tensor([3, 3], dtype=torch.long),
-        "delay": torch.zeros(2, dtype=torch.long),
-    }
-
-    model.eval()
-    plain, _, _, target_lens, _ = model.prepare_audio_channel_embeddings(**codes_kwargs)
-
-    model.train()
-    masked, _, _, _, _ = model.prepare_audio_channel_embeddings(**codes_kwargs)
-
-    num_frames = int(target_lens.max())
-    all_masked = torch.full(
-        (2, model.num_audio_codebooks * model.frame_stacking_factor, num_frames),
-        model.mask_token_id,
-        dtype=torch.long,
-    )
-    torch.testing.assert_close(masked[:, :num_frames], model.embed_audio_tokens(all_masked))
-    assert not torch.allclose(plain[:, :num_frames], masked[:, :num_frames])
 
 
 def _codec_latent_cfg(overrides=None):
@@ -740,6 +695,12 @@ def test_acoustic_codes_predictor_process_batch_with_frame_stacking(use_codec_la
                 "acoustic_codes_predictor": True,
                 "acoustic_codes_predictor_schedule": [4, 12],
                 "use_user_speaking_token": True,
+                "feature_masking": {
+                    "_target_": "nemo.collections.tts.modules.magpietts_modules.FeatureMasking",
+                    "hidden_size": 32,
+                    "mask_min": 1.0,
+                    "mask_max": 1.0,
+                },
             }
         )
     )

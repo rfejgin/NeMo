@@ -494,6 +494,7 @@ def main(argv=None):
                 hparams_from_wandb=args.hparams_file_from_wandb,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
                 disable_cas_for_context_text=args.disable_cas_for_context_text,
+                ignore_manifest_context_text=args.ignore_manifest_context_text,
             )
 
             # Load model
@@ -538,6 +539,7 @@ def main(argv=None):
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
                 disable_cas_for_context_text=args.disable_cas_for_context_text,
+                ignore_manifest_context_text=args.ignore_manifest_context_text,
             )
 
             # Load model

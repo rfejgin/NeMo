@@ -417,6 +417,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         self.pad_context_text_to_max_duration = False
         self.add_language_to_context_text = cfg.get('add_language_to_context_text', False)
+        # When True, the manifest `context_text` is never read, so every sample is conditioned on the placeholder
+        # context text instead (the language tag when `add_language_to_context_text` is set).
+        self.ignore_manifest_context_text = cfg.get('ignore_manifest_context_text', False)
         self.ignore_phoneme_languages = cfg.get('ignore_phoneme_languages', [])
 
         super().__init__(cfg=cfg, trainer=trainer)

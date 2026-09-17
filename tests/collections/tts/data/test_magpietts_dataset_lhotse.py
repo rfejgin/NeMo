@@ -191,6 +191,46 @@ def _multiturn_cutset():
     return CutSet.from_cuts([cut])
 
 
+def _multiturn_cutset_without_context_codes():
+    """Multiturn cut carrying `context_text` and `target_codes`, but no `context_codes`."""
+    cut = dummy_cut(
+        2,
+        duration=0.8,
+        recording=dummy_recording(2, duration=0.8, with_data=True, sampling_rate=SAMPLE_RATE),
+    )
+    cut.target_audio = dummy_recording(12, duration=0.8, with_data=True, sampling_rate=SAMPLE_RATE)
+    cut.supervisions = [
+        SupervisionSegment(
+            id="turn-user-0",
+            recording_id=cut.recording_id,
+            start=0.0,
+            duration=0.05,
+            text="hi",
+            language="en",
+            speaker="user",
+            custom={"context_text": "speaker prompt"},
+        ),
+        SupervisionSegment(
+            id="turn-agent-0",
+            recording_id=cut.recording_id,
+            start=0.06,
+            duration=0.1,
+            text="hello",
+            language="en",
+            speaker="assistant",
+        ),
+    ]
+    cut.custom = {
+        **(cut.custom or {}),
+        "task": "dialog",
+        "target_codes": _memory_temporal_array(_cached_codes(num_frames=8)),
+        "source_codes": _memory_temporal_array(_cached_codes(num_frames=8, offset=1)),
+        "tokenizer_names": [BPE_TOKENIZER_NAME],
+        "lang": "en",
+    }
+    return CutSet.from_cuts([cut])
+
+
 def _dataset_kwargs():
     return {
         "sample_rate": SAMPLE_RATE,
@@ -208,6 +248,21 @@ def _dataset_kwargs():
         "text_conditioning_tokenizer_name": BPE_TOKENIZER_NAME,
         "tokenizer_config": _tokenizer_config(),
     }
+
+
+def _multiturn_dataset_kwargs():
+    kwargs = _dataset_kwargs()
+    kwargs.update(
+        {
+            "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+            "frame_stacking_factor": FRAME_STACKING_FACTOR,
+            "source_sample_rate": SAMPLE_RATE,
+            "input_roles": ["user"],
+            "output_roles": ["assistant"],
+            "add_text_bos": False,
+        }
+    )
+    return kwargs
 
 
 class TestMagpieTTSLhotseDatasets:
@@ -231,6 +286,56 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["context_text_tokens"].shape[0] == 1
         assert batch["context_text_tokens_lens"].item() > 0
         assert batch["has_text_context"].tolist() == [True]
+
+    @pytest.mark.parametrize(
+        "add_language_to_context_text, expected_context_text",
+        [(True, "[EN]"), (False, "[NO TEXT CONTEXT]")],
+    )
+    def test_single_turn_dataset_can_ignore_manifest_context_text(
+        self, add_language_to_context_text, expected_context_text
+    ):
+        _seed_everything()
+        kwargs = _dataset_kwargs()
+        kwargs.update(
+            {
+                "add_language_to_context_text": add_language_to_context_text,
+                "ignore_manifest_context_text": True,
+            }
+        )
+        dataset = MagpieTTSLhotseDataset(**kwargs)
+
+        batch = dataset[_single_turn_cutset()]
+
+        expected_tokens = dataset.text_tokenizer.encode(expected_context_text, tokenizer_name=BPE_TOKENIZER_NAME)
+        assert batch["has_text_context"].tolist() == [False]
+        assert batch["context_text_tokens"][0].tolist() == expected_tokens
+        # Audio conditioning must be untouched by the context text override.
+        assert batch["context_audio_codes"].shape == (1, NUM_AUDIO_CODEBOOKS, 2)
+
+    def test_single_turn_dataset_uses_manifest_context_text_by_default(self):
+        _seed_everything()
+        dataset = MagpieTTSLhotseDataset(**_dataset_kwargs())
+
+        batch = dataset[_single_turn_cutset()]
+
+        expected_tokens = dataset.text_tokenizer.encode("speaker prompt", tokenizer_name=BPE_TOKENIZER_NAME)
+        assert batch["has_text_context"].tolist() == [True]
+        assert batch["context_text_tokens"][0].tolist() == expected_tokens
+
+    def test_multiturn_ignoring_context_text_enables_audio_context_fallback(self):
+        _seed_everything()
+        kwargs = _multiturn_dataset_kwargs()
+        cutset = _multiturn_cutset_without_context_codes()
+
+        # A cut with `context_text` is treated as a text-context sample, so no context audio is derived.
+        text_context_batch = MagpieTTSLhotseMultiturnDataset(**kwargs)[cutset]
+        assert text_context_batch["has_text_context"].tolist() == [True]
+        assert text_context_batch["context_audio_codes_lens"].tolist() == [0]
+
+        kwargs["ignore_manifest_context_text"] = True
+        audio_context_batch = MagpieTTSLhotseMultiturnDataset(**kwargs)[cutset]
+        assert audio_context_batch["has_text_context"].tolist() == [False]
+        assert audio_context_batch["context_audio_codes_lens"].tolist() == [5]
 
     def test_multiturn_pronunciation_control_only_changes_target_turns(self):
         _seed_everything()

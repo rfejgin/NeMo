@@ -141,6 +141,8 @@ class ModelLoadConfig:
         hparams_from_wandb: Whether hparams file is from wandb export.
         phoneme_tokenizer_path: Override path to the phoneme tokenizer file (EasyMagpieTTS only).
         disable_cas_for_context_text: Skip CAS embeddings for context text in legacy EasyMagpieTTS models.
+        ignore_manifest_context_text: Ignore the manifest 'context_text' field and condition on the placeholder
+            context text instead (EasyMagpieTTS only).
     """
 
     hparams_file: Optional[str] = None
@@ -152,6 +154,7 @@ class ModelLoadConfig:
     hparams_from_wandb: bool = False
     phoneme_tokenizer_path: Optional[str] = None
     disable_cas_for_context_text: bool = False
+    ignore_manifest_context_text: bool = False
 
     def validate(self) -> None:
         """Validate that the configuration is complete and consistent."""
@@ -412,6 +415,8 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
             # Some legacy EasyMagpieTTS models trained context text without CAS embeddings.
             if config.disable_cas_for_context_text:
                 model_cfg.disable_cas_for_context_text = True
+            if config.ignore_manifest_context_text:
+                model_cfg.ignore_manifest_context_text = True
             if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                 model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
 
@@ -438,6 +443,8 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
                 # Some legacy EasyMagpieTTS models trained context text without CAS embeddings.
                 if config.disable_cas_for_context_text:
                     model_cfg.disable_cas_for_context_text = True
+                if config.ignore_manifest_context_text:
+                    model_cfg.ignore_manifest_context_text = True
                 if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                     model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
                 # Override target so restore_from instantiates the inference class,
@@ -1364,6 +1371,14 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         '--disable_cas_for_context_text',
         action='store_true',
         help='Skip CAS embeddings for context text when loading legacy EasyMagpieTTS models',
+    )
+    group.add_argument(
+        '--ignore_manifest_context_text',
+        action='store_true',
+        help=(
+            'Ignore the manifest context_text field and condition every sample on the placeholder context text '
+            '(the language tag when the checkpoint sets add_language_to_context_text)'
+        ),
     )
 
 

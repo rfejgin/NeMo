@@ -365,6 +365,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         context_duration_max: Maximum duration of context audio in seconds.
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
+        ignore_manifest_context_text: Whether to ignore the manifest 'context_text' field and always use the
+            placeholder context text (the language tag if add_language_to_context_text is set).
     """
 
     def __init__(
@@ -397,6 +399,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         phoneme_text_bop_marker: str = "<bop>",
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
+        ignore_manifest_context_text: bool = False,
         default_tokenizer_name: str = "english_phoneme",
     ):
         super().__init__(
@@ -437,6 +440,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
+        self.ignore_manifest_context_text = ignore_manifest_context_text
         self.default_tokenizer_name = default_tokenizer_name
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
@@ -639,7 +643,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             example['audio_len_16khz'] = audio_len_16khz
 
         if self.use_text_conditioning_tokenizer:
-            if 'context_text' in data.manifest_entry:
+            if 'context_text' in data.manifest_entry and not self.ignore_manifest_context_text:
                 context_text = data.manifest_entry['context_text']
                 if self.text_context_remapping is not None and context_text in self.text_context_remapping:
                     if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:

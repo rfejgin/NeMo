@@ -130,6 +130,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
         phoneme_turn_max_words_to_drop: Turns with this many words or fewer keep empty phoneme string.
+        ignore_manifest_context_text (bool): If True, the cut's ``context_text`` is ignored, so the cut is treated
+            as a pure audio-context sample and the placeholder context text is used instead (the language tag if
+            `add_language_to_context_text` is True). Defaults to False.
     """
 
     def __init__(
@@ -169,6 +172,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_dropout_batch_prob: float = 0.0,
         phoneme_turn_dropout_turn_prob: float = 0.0,
         phoneme_turn_max_words_to_drop: int = 2,
+        ignore_manifest_context_text: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -202,6 +206,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
+        self.ignore_manifest_context_text = ignore_manifest_context_text
 
         self.source_sample_rate = source_sample_rate
         self.input_roles = set(ifnone(input_roles, ["user"]))
@@ -624,7 +629,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
             language = self._get_language(cut)
             features["languages"].append(language)
-            context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
+            context_text = (
+                None
+                if self.ignore_manifest_context_text
+                else next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
+            )
 
             target_codes, source_codes = self._load_cached_codes(cut)
             if target_codes is not None:

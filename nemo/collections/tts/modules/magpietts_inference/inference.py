@@ -923,6 +923,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             phoneme_text_bop_marker=self.model.phoneme_text_bop_marker,
             phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,
             add_language_to_context_text=self.model.add_language_to_context_text,
+            ignore_manifest_context_text=self.model.ignore_manifest_context_text,
             default_tokenizer_name=self.config.default_tokenizer_name,
         )
         dataset.text_tokenizer = self.model.tokenizer

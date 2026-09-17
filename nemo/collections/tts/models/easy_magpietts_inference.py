@@ -450,12 +450,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             else:
                 self.audio_in_projection = nn.Identity()
 
-        # Train-time masking of the audio history the decoder reads. Hidden frames go in as the
-        # mask token, which is the model's own marker for a position whose codes are not known.
-        self.mask_audio_history = cfg.get('mask_audio_history', False)
-        self.audio_history_mask_min = cfg.get('audio_history_mask_min', 0.0)
-        self.audio_history_mask_max = cfg.get('audio_history_mask_max', 0.75)
-
         # Speaker/context encoder for context audio embeddings.
         # This enables keeping the zero-shot conditioning module private at release time.
 
@@ -703,9 +697,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 codebook_size=self.codebook_size,
                 prediction_schedule=prediction_schedule,
                 n_layers=cfg.get('acoustic_codes_predictor_n_layers', 1),
-                mask_codes=cfg.get('acoustic_codes_predictor_mask_codes', False),
-                mask_min=cfg.get('acoustic_codes_predictor_mask_min', 0.0),
-                mask_max=cfg.get('acoustic_codes_predictor_mask_max', 0.9),
             )
 
     @property

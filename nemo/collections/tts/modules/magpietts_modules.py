@@ -137,47 +137,6 @@ def cosine_schedule(x: torch.Tensor):
     return torch.cos(x * (torch.pi / 2))
 
 
-def create_feature_mask(
-    lengths: Tensor,
-    mask_min: float,
-    mask_max: float,
-    x: Optional[Tensor] = None,
-    alpha: float = 2.0,
-    beta: float = 1.0,
-) -> Tensor:
-    """
-    Picks a random share of every sequence's timesteps to hide during training.
-
-    The share is drawn per sequence from a Beta distribution and rescaled into [mask_min, mask_max].
-    The timesteps themselves are drawn uniformly, so the hidden ones are scattered over the sequence
-    rather than forming contiguous spans.
-
-    Args:
-        lengths (Tensor): Valid length of each sequence, shaped (B,).
-        mask_min (float): Smallest share of timesteps to hide.
-        mask_max (float): Largest share of timesteps to hide.
-        x (Optional[Tensor]): Tensor to shape the mask after, its last dimension being time.
-            Defaults to the longest sequence, as in `get_mask_from_lengths`.
-        alpha (float): First shape parameter of the Beta distribution the share is drawn from.
-        beta (float): Second shape parameter of the Beta distribution.
-
-    Returns:
-        Tensor: Boolean mask shaped (B, T), True where a timestep is hidden.
-    """
-    len_mask = get_mask_from_lengths(lengths, x=x)
-    batch_size, max_len = len_mask.shape
-
-    mask_dist = torch.distributions.beta.Beta(concentration1=alpha, concentration0=beta)
-    mask_share = mask_dist.sample(sample_shape=torch.Size([batch_size])).to(lengths.device)
-    mask_share = mask_min + (mask_max - mask_min) * mask_share
-    # rank the last hidden timestep takes among the draws below, so that as many are hidden as asked
-    mask_rank = torch.clamp_min(mask_share * lengths.float() - 1, 0).long().unsqueeze(1)
-
-    mask_vals = torch.rand((batch_size, max_len), device=lengths.device) * len_mask
-    threshold = torch.gather(mask_vals.sort(dim=1, descending=True).values, index=mask_rank, dim=1)
-    return (mask_vals >= threshold) & len_mask
-
-
 def build_vocabs(subword_vocab: dict, subword_padding_idx: int, special_vocab: dict = None) -> tuple[dict, dict]:
     """
     Builds the character vocabulary and the mapping from subword ids to character ids.
@@ -955,9 +914,6 @@ class AcousticCodesPredictor(torch.nn.Module):
         codebook_size: int,
         prediction_schedule,
         n_layers: int = 1,
-        mask_codes: bool = False,
-        mask_min: float = 0.0,
-        mask_max: float = 0.9,
     ):
         super().__init__()
         prediction_schedule = tuple(int(num_codes) for num_codes in prediction_schedule)
@@ -992,9 +948,6 @@ class AcousticCodesPredictor(torch.nn.Module):
             )
             first_code += num_codes
         self.blocks = torch.nn.ModuleList(blocks)
-        self.mask_codes = mask_codes
-        self.mask_min = mask_min
-        self.mask_max = mask_max
 
     def make_cache(self, batch_size: int, device, dtype) -> List[HybridMambaAttentionDynamicCache]:
         return [block.make_cache(batch_size, device=device, dtype=dtype) for block in self.blocks]
@@ -1040,20 +993,7 @@ class AcousticCodesPredictor(torch.nn.Module):
 
         for block in self.blocks:
             if previous_codes is not None:
-                input_codes = previous_codes
-                if self.mask_codes and self.training:
-                    hidden_frames = create_feature_mask(
-                        lengths=lengths,
-                        mask_min=self.mask_min,
-                        mask_max=self.mask_max,
-                        x=target_codes[:, :, 0],
-                    )
-                    input_codes = torch.where(
-                        hidden_frames.unsqueeze(-1),
-                        torch.full_like(previous_codes, self.mask_token_id),
-                        previous_codes,
-                    )
-                hidden_states = hidden_states + self._embed(input_codes, previous_codebook_indices)
+                hidden_states = hidden_states + self._embed(previous_codes, previous_codebook_indices)
             hidden_states = block(hidden_states)
             logits = block.compute_logits(hidden_states)
 
